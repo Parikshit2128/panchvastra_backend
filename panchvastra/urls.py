@@ -8,8 +8,11 @@ from panchvastra import settings
 
 
 urlpatterns = [
+    path('admin/', admin.site.urls),
+
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path('swagger/', SpectacularSwaggerView.as_view(url_name='schema')),
+
     path('v1/', include('pv_app.urls')),
 ]
 if settings.DEBUG:
