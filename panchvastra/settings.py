@@ -56,6 +56,8 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
+
     'django.middleware.security.SecurityMiddleware',
 
     "corsheaders.middleware.CorsMiddleware",
@@ -158,11 +160,10 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 CORS_ALLOW_CREDENTIALS = True
 
-CORS_ALLOWED_ORIGINS = config(
-    "CORS_ALLOWED_ORIGINS",
-    cast=Csv(),
-    default=""
-)
+CORS_ALLOWED_ORIGINS = [
+    "http://127.0.0.1:5800",
+    "http://localhost:5500",
+]
 
 CORS_ALLOW_METHODS = [
     "GET",
@@ -215,3 +216,10 @@ SPECTACULAR_SETTINGS = {
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+
+
+RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
+
+RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
+
+RAZORPAY_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET")

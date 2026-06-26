@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Razorpay Test</title>
+</head>
+
+<body>
+
+<button onclick="startPayment()">Pay Now</button>
+
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+
+<script>
+
+async function startPayment() {
+
+    // Step 1: call your backend
+    const res = await fetch("http://localhost:8001/v1/checkout_payment/", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            "customer_name": "John Doe",
+            "customer_email": "john@example.com",
+            "customer_mobile": "9876543210",
+
+            "address_line_1": "Flat 12, Green Apartments",
+            "address_line_2": "Near City Mall",
+            "landmark": "City Mall",
+            "city": "Bhopal",
+            "state": "Madhya Pradesh",
+            "pincode": "462001",
+
+            "items": [
+                {
+                "product_id": 100,
+                "product_name": "Retro Graphic Oversized Tee",
+                "size": "L",
+                "color": "Off-White",
+                "quantity": 2,
+                "mrp": 899,
+                "selling_price": 1199
+                }
+            ]
+        })
+    });
+
+    const data = await res.json();
+
+    // Step 2: open Razorpay
+    const options = {
+        key: data.key,
+        amount: data.amount,
+        currency: data.currency,
+        order_id: data.razorpay_order_id,
+
+        handler: async function (response) {
+
+            console.log("Payment Response:", response);
+
+            // Step 3: verify payment
+            const verify = await fetch("http://localhost:8001/v1/verify_payment_api/", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify(response)
+            });
+
+            console.log(await verify.json());
+        }
+    };
+
+    const rzp = new Razorpay(options);
+    rzp.open();
+}
+
+</script>
+
+</body>
+</html>

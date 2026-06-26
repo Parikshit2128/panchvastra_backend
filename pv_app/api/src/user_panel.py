@@ -2,9 +2,9 @@ from rest_framework.decorators import api_view
 from rest_framework import status
 
 from helpers.utils import generic_response_handler
-from pv_app.api.business_logic.bl_user_panel import create_category, delete_category, get_categories, get_products, update_category
-from pv_app.api.serializer.sz_user_panel import CreateCategorySerializer, UpdateCategorySerializer
-from pv_app.api.swagger.swag_user_panel import categories_management_schema, products_management_schema
+from pv_app.api.business_logic.bl_user_panel import add_to_cart, create_category, create_coupon, delete_cart_item, delete_category, delete_coupon, get_cart, get_categories, get_coupons, get_product_detail, get_product_listing, update_cart_quantity, update_category, update_coupon
+from pv_app.api.serializer.sz_user_panel import AddToCartSerializer, CouponSerializer, CreateCategorySerializer, UpdateCartSerializer, UpdateCategorySerializer, UpdateCouponSerializer
+from pv_app.api.swagger.swag_user_panel import categories_management_schema, products_management_schema, cart_management_schema, coupon_management_schema
 
 
 
@@ -60,20 +60,104 @@ def categories_management(request):
     
 
 
+
+# @products_management_schema
+# @api_view(["GET"])
+# @generic_response_handler
+# def products_management(request):
+#     print("request:", request.GET)
+#     return get_products(
+#         page=request.GET.get("page", 1),
+#         page_size=request.GET.get("page_size", 20),
+#         product_id=request.GET.get("id"),
+#         category_id=request.GET.get("category_id"),
+#         sub_category_id=request.GET.get("sub_category_id"),
+#         size=request.GET.get("size"),
+#         min_price=request.GET.get("min_price"),
+#         max_price=request.GET.get("max_price"),
+#         search=request.GET.get("search"),
+#         sort_by=request.GET.get("sort_by", "latest"),
+#         tag=request.GET.get("tag"),
+#     )
+
 @products_management_schema
 @api_view(["GET"])
 @generic_response_handler
 def products_management(request):
 
-    return get_products(
+    product_id = request.GET.get("id")
+
+    if product_id:
+        return get_product_detail(
+            product_id=product_id
+        )
+
+    return get_product_listing(
         page=request.GET.get("page", 1),
         page_size=request.GET.get("page_size", 20),
-        product_id=request.GET.get("id"),
         category_id=request.GET.get("category_id"),
         sub_category_id=request.GET.get("sub_category_id"),
+        tag=request.GET.get("tag"),
+        color=request.GET.get("color"),
         size=request.GET.get("size"),
         min_price=request.GET.get("min_price"),
         max_price=request.GET.get("max_price"),
         search=request.GET.get("search"),
         sort_by=request.GET.get("sort_by", "latest")
     )
+
+
+@cart_management_schema
+@api_view(["GET", "POST", "PUT", "DELETE"])
+@generic_response_handler
+def cart_management(request):
+    user_id = 1 
+
+    if request.method == "POST":
+        serializer = AddToCartSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        return add_to_cart(serializer.validated_data, user_id)
+
+    elif request.method == "GET":
+        return get_cart(user_id)
+
+    elif request.method == "PUT":
+        serializer = UpdateCartSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        return update_cart_quantity(serializer.validated_data, user_id)
+
+    elif request.method == "DELETE":
+        cart_item_id = request.GET.get("id")
+        return delete_cart_item(cart_item_id, user_id)
+
+
+
+@coupon_management_schema
+@api_view(["GET", "POST", "PUT", "DELETE"])
+@generic_response_handler
+def coupon_management(request):
+    user_id = 1
+
+    if request.method == "POST":
+        serializer = CouponSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        return create_coupon(serializer.validated_data, user_id)
+
+    elif request.method == "GET":
+        coupon_id = request.GET.get("id")
+        coupon_code = request.GET.get("code")
+
+        return get_coupons(
+            user_id=user_id,
+            coupon_id=coupon_id,
+            coupon_code=coupon_code
+        )
+
+    elif request.method == "PUT":
+        serializer = UpdateCouponSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        return update_coupon(serializer.validated_data, user_id)
+
+    elif request.method == "DELETE":
+        coupon_id = request.GET.get("id")
+        return delete_coupon(coupon_id, user_id)

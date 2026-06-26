@@ -5,7 +5,7 @@ from drf_spectacular.utils import (
     OpenApiTypes
 )
 
-from pv_app.api.serializer.sz_user_panel import CreateCategorySerializer, UpdateCategorySerializer
+from pv_app.api.serializer.sz_user_panel import AddToCartSerializer, CouponSerializer, CreateCategorySerializer, UpdateCartSerializer, UpdateCategorySerializer, UpdateCouponSerializer
 
 
 categories_management_schema = extend_schema_view(
@@ -67,43 +67,6 @@ categories_management_schema = extend_schema_view(
 products_management_schema = extend_schema_view(
     get=extend_schema(
         tags=["Products"],
-        description="""
-        Fetch products with filters, sorting, pagination, and product details.
-
-        Supported Filters:
-        - category_id
-        - sub_category_id
-        - size
-        - min_price
-        - max_price
-        - search
-
-        Supported Sorting:
-        - latest
-        - oldest
-        - price_low_to_high
-        - price_high_to_low
-
-        Examples:
-
-        /products?page=1&page_size=20
-
-        /products?id=1
-
-        /products?category_id=1
-
-        /products?sub_category_id=2
-
-        /products?size=M
-
-        /products?min_price=500&max_price=1500
-
-        /products?search=oversized
-
-        /products?sort_by=price_low_to_high
-
-        /products?category_id=1&size=L&min_price=500&max_price=1500&sort_by=price_low_to_high
-        """,
         parameters=[
             OpenApiParameter(
                 name="page",
@@ -181,6 +144,118 @@ products_management_schema = extend_schema_view(
                 - price_high_to_low
                 """
             ),
+            OpenApiParameter(
+                name="tag",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description="Filter by tag"
+            ),
         ],
     )
+)
+
+
+
+cart_management_schema = extend_schema_view(
+    post=extend_schema(
+        tags=["Cart"],
+        summary="Add item to cart",
+        description="Adds a specific variant size product to the user's cart. If it already exists, increments quantity.",
+        request=AddToCartSerializer,
+    ),
+    get=extend_schema(
+        tags=["Cart"],
+        summary="Retrieve user cart",
+        description="Fetches all active items inside the user's cart alongside full layout metadata and live checkout summary calculations.",
+    ),
+    put=extend_schema(
+        tags=["Cart"],
+        summary="Update cart item quantity",
+        description="Directly overrides and updates the structural quantity threshold of a specific active item line inside the cart.",
+        request=UpdateCartSerializer,
+    ),
+    delete=extend_schema(
+        tags=["Cart"],
+        summary="Remove item from cart",
+        description="Performs a safe logical deletion to drop an item line cleanly from the active shopping cart layout.",
+        parameters=[
+            OpenApiParameter(
+                name="id",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description="The unique ID of the cart item (`cart_item_id`) to be removed."
+            ),
+        ],
+    ),
+)
+
+
+
+
+coupon_management_schema = extend_schema_view(
+
+    post=extend_schema(
+        tags=["Coupon Management"],
+        summary="Create coupon",
+        description=(
+            "Creates a new coupon with discount configuration, "
+            "usage limits, validity period, and eligibility rules."
+        ),
+        request=CouponSerializer,
+    ),
+
+    get=extend_schema(
+        tags=["Coupon Management"],
+        summary="Retrieve coupons",
+        description=(
+            "Returns all active coupons or fetches a specific coupon "
+            "using either its unique ID or coupon code."
+        ),
+        parameters=[
+            OpenApiParameter(
+                name="id",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description="Unique coupon ID."
+            ),
+            OpenApiParameter(
+                name="code",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description="Coupon code (case-insensitive). Example: SAVE100"
+            ),
+        ],
+    ),
+
+    put=extend_schema(
+        tags=["Coupon Management"],
+        summary="Update coupon",
+        description=(
+            "Updates an existing coupon including discount values, "
+            "usage limits, validity dates, status, and eligibility rules."
+        ),
+        request=UpdateCouponSerializer,
+    ),
+
+    delete=extend_schema(
+        tags=["Coupon Management"],
+        summary="Delete coupon",
+        description=(
+            "Performs a soft delete by marking the coupon as inactive "
+            "and deleted."
+        ),
+        parameters=[
+            OpenApiParameter(
+                name="id",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description="Unique ID of the coupon to delete."
+            ),
+        ],
+    ),
 )

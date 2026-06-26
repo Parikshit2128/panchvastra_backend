@@ -14,6 +14,7 @@ urlpatterns = [
     path('swagger/', SpectacularSwaggerView.as_view(url_name='schema')),
 
     path('v1/', include('pv_app.urls')),
+    path('v1/', include('payments.urls')),
 ]
 if settings.DEBUG:
     urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
