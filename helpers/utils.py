@@ -1,11 +1,16 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 import decimal
+import random
 import uuid
 from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
+from django.db import connection
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.exceptions import ValidationError, APIException
 from django.http import Http404
+
+import smtplib
+from email.mime.text import MIMEText
 
 
 
@@ -116,3 +121,53 @@ def generic_response_handler(business_func):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     return wrapper
+
+
+def get_user_role_id():
+
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            SELECT id
+            FROM roles
+            WHERE name = %s
+              AND is_active = TRUE
+              AND is_deleted = FALSE
+            LIMIT 1
+        """, ["User"])
+
+        row = cursor.fetchone()
+
+    return row[0] if row else None
+
+
+
+def generate_otp_with_expiry():
+    otp = f"{random.randint(100000, 999999)}"
+    otp_expire = datetime.now(timezone.utc) + timedelta(minutes=10)
+    return otp, otp_expire
+
+
+def _store_otp(cursor, user_id, otp, expires_at):
+    cursor.execute("""
+        INSERT INTO user_otps (user_id, otp, expires_at)
+        VALUES (%s, %s, %s)
+    """, [user_id, otp, expires_at])
+
+
+
+def send_verification_otp(email, otp):
+    msg = MIMEText(f"Your OTP is {otp}. It expires in 10 minutes.")
+    msg["Subject"] = "Email Verification OTP"
+    msg["From"] = "parikshitshukla.2128@gmail.com"
+    msg["To"] = email
+
+    server = smtplib.SMTP("smtp.gmail.com", 587)
+    server.starttls()
+
+    server.login(
+        "parikshitshukla.2128@gmail.com",
+        "ngqw rpvo pycq pops"
+    )
+
+    server.send_message(msg)
+    server.quit()
