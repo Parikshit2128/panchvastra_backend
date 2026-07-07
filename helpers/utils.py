@@ -168,16 +168,11 @@ def send_verification_otp(email, otp):
 
         server = smtplib.SMTP(EMAIL_HOST, EMAIL_PORT)
         server.starttls()
-
-        server.login(
-            EMAIL_HOST_USER,
-            EMAIL_HOST_PASSWORD
-        )
-
+        server.login(EMAIL_HOST_USER, EMAIL_HOST_PASSWORD)
         server.send_message(msg)
         server.quit()
 
     except Exception as e:
-        print("SMTP ERROR:", e)
+        print("SMTP ERROR:", repr(e))
         traceback.print_exc()
         raise
