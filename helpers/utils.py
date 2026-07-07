@@ -1,6 +1,8 @@
 from datetime import date, datetime, timedelta, timezone
 import decimal
 import random
+import traceback
+import traceback
 import uuid
 from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
 from django.db import connection
@@ -158,18 +160,24 @@ def _store_otp(cursor, user_id, otp, expires_at):
 
 
 def send_verification_otp(email, otp):
-    msg = MIMEText(f"Your OTP is {otp}. It expires in 10 minutes.")
-    msg["Subject"] = "Email Verification OTP"
-    msg["From"] = EMAIL_HOST_USER
-    msg["To"] = email
+    try:
+        msg = MIMEText(f"Your OTP is {otp}. It expires in 10 minutes.")
+        msg["Subject"] = "Email Verification OTP"
+        msg["From"] = EMAIL_HOST_USER
+        msg["To"] = email
 
-    server = smtplib.SMTP(EMAIL_HOST, EMAIL_PORT)
-    server.starttls()
+        server = smtplib.SMTP(EMAIL_HOST, EMAIL_PORT)
+        server.starttls()
 
-    server.login(
-        EMAIL_HOST_USER,
-        EMAIL_HOST_PASSWORD
-    )
+        server.login(
+            EMAIL_HOST_USER,
+            EMAIL_HOST_PASSWORD
+        )
 
-    server.send_message(msg)
-    server.quit()
+        server.send_message(msg)
+        server.quit()
+
+    except Exception as e:
+        print("SMTP ERROR:", e)
+        traceback.print_exc()
+        raise
