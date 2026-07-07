@@ -118,6 +118,7 @@ def generic_response_handler(business_func):
             }, status=e.status_code)
 
         except Exception as e:
+            traceback.print_exc()
             return Response({
                 "success": False,
                 "message": "Internal Server Error",
