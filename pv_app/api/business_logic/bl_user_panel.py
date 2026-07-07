@@ -1320,3 +1320,399 @@ def delete_coupon(coupon_id, user_id):
     return {
         "message": "Coupon deleted successfully."
     }, status.HTTP_200_OK
+
+
+def get_order_listing(
+    user_id,
+    page=1,
+    page_size=10,
+    order_type=None
+):
+
+    page = max(int(page), 1)
+    page_size = max(int(page_size), 1)
+    offset = (page - 1) * page_size
+
+    where_conditions = [
+        "o.user_id = %s",
+        "o.is_deleted = FALSE",
+        "o.is_active = TRUE"
+    ]
+
+    params = [user_id]
+
+    if order_type == "current":
+        where_conditions.append("""
+            o.order_status IN (
+                'PLACED',
+                'CONFIRMED',
+                'PACKED',
+                'SHIPPED',
+                'OUT_FOR_DELIVERY'
+            )
+        """)
+
+    elif order_type == "history":
+        where_conditions.append("""
+            o.order_status IN (
+                'DELIVERED',
+                'CANCELLED'
+            )
+        """)
+
+    where_clause = " AND ".join(where_conditions)
+
+    count_sql = f"""
+        SELECT COUNT(*)
+        FROM public.orders o
+        WHERE {where_clause}
+    """
+
+    with connection.cursor() as cursor:
+        cursor.execute(count_sql, params)
+        total_records = cursor.fetchone()[0]
+
+    if total_records == 0:
+        return {
+            "message": "Data not found.",
+            "data": [],
+            "pagination": {}
+        }, status.HTTP_200_OK
+
+    main_sql = f"""
+        SELECT
+
+            o.id,
+            o.order_number,
+            o.order_status,
+            o.payment_status,
+            o.payment_method,
+            o.grand_total,
+            o.ordered_at,
+            o.tracking_id,
+            o.courier_name,
+
+            (
+                SELECT COUNT(*)
+                FROM public.order_items oi
+                WHERE oi.order_id = o.id
+                    AND oi.is_deleted = FALSE
+                    AND oi.is_active = TRUE
+            ) AS total_items,
+
+            (
+                SELECT COALESCE(
+                    json_agg(
+                        json_build_object(
+
+                            'id', oi.id,
+
+                            'product_id', oi.product_id,
+
+                            'variant_id', oi.variant_id,
+
+                            'product_name', oi.product_name,
+
+                            'color', oi.color,
+
+                            'size', oi.size,
+
+                            'quantity', oi.quantity,
+
+                            'mrp', oi.mrp,
+
+                            'selling_price', oi.selling_price,
+
+                            'total_amount', oi.total_amount,
+
+                            'sku', pv.sku,
+
+                            'image_url',
+                            (
+                                SELECT pvi.image_url
+                                FROM public.product_variant_images pvi
+                                WHERE
+                                    pvi.variant_id = pv.id
+                                    AND pvi.is_deleted = FALSE
+                                    AND pvi.is_active = TRUE
+                                ORDER BY pvi.display_order
+                                LIMIT 1
+                            )
+
+                        )
+                    ),
+                    '[]'
+                )
+                FROM public.order_items oi
+
+                INNER JOIN public.product_variants pv
+                    ON pv.id = oi.variant_id
+
+                WHERE
+                    oi.order_id = o.id
+                    AND oi.is_deleted = FALSE
+                    AND oi.is_active = TRUE
+
+            ) AS items
+
+        FROM public.orders o
+
+        WHERE {where_clause}
+
+        ORDER BY o.ordered_at DESC
+
+        LIMIT %s
+        OFFSET %s
+    """
+
+    query_params = params + [page_size, offset]
+
+    with connection.cursor() as cursor:
+
+        cursor.execute(main_sql, query_params)
+
+        rows = cursor.fetchall()
+
+        columns = [col[0] for col in cursor.description]
+
+    result = []
+
+    for row in rows:
+
+        item = dict(zip(columns, row))
+
+        item["grand_total"] = float(item["grand_total"])
+
+        if isinstance(item["items"], str):
+            item["items"] = json.loads(item["items"])
+
+        for product in item["items"]:
+
+            product["mrp"] = float(product["mrp"])
+            product["selling_price"] = float(product["selling_price"])
+            product["total_amount"] = float(product["total_amount"])
+
+        result.append(item)
+
+    pagination = {
+        "page": page,
+        "page_size": page_size,
+        "total_records": total_records,
+        "total_pages": math.ceil(total_records / page_size),
+        "has_next": page * page_size < total_records,
+        "has_previous": page > 1
+    }
+
+    return {
+        "message": "Data fetched successfully.",
+        "data": result,
+        "pagination": pagination
+    }, status.HTTP_200_OK
+
+
+
+def get_order_detail(user_id, order_id):
+
+    order_sql = """
+        SELECT
+            o.id,
+            o.order_number,
+
+            o.customer_name,
+            o.customer_email,
+            o.customer_mobile,
+
+            o.address_line_1,
+            o.address_line_2,
+            o.landmark,
+            o.city,
+            o.state,
+            o.country,
+            o.pincode,
+
+            o.payment_method,
+            o.payment_status,
+            o.order_status,
+
+            o.tracking_id,
+            o.courier_name,
+
+            o.subtotal,
+            o.discount_amount,
+            o.shipping_amount,
+            o.tax_amount,
+            o.grand_total,
+
+            o.ordered_at,
+            o.shipped_at,
+            o.delivered_at,
+            o.cancelled_at
+
+        FROM public.orders o
+
+        WHERE
+            o.id=%s
+            AND o.user_id=%s
+            AND o.is_deleted=FALSE
+            AND o.is_active=TRUE
+
+        LIMIT 1
+    """
+
+    with connection.cursor() as cursor:
+        cursor.execute(order_sql, [order_id, user_id])
+
+        row = cursor.fetchone()
+
+        if not row:
+            return {
+                "message": "Order not found."
+            }, status.HTTP_404_NOT_FOUND
+
+        columns = [col[0] for col in cursor.description]
+        order = dict(zip(columns, row))
+
+    items_sql = """
+        SELECT
+
+            oi.id,
+
+            oi.product_id,
+            oi.variant_id,
+
+            oi.product_name,
+
+            oi.color,
+            oi.size,
+
+            oi.quantity,
+
+            oi.mrp,
+            oi.selling_price,
+            oi.total_amount,
+
+            pv.sku,
+
+            (
+                SELECT pvi.image_url
+                FROM public.product_variant_images pvi
+                WHERE
+                    pvi.variant_id = pv.id
+                    AND pvi.is_deleted = FALSE
+                    AND pvi.is_active = TRUE
+                ORDER BY pvi.display_order
+                LIMIT 1
+            ) AS image_url
+
+        FROM public.order_items oi
+
+        INNER JOIN public.product_variants pv
+            ON pv.id = oi.variant_id
+
+        WHERE
+            oi.order_id = %s
+            AND oi.is_deleted = FALSE
+            AND oi.is_active = TRUE
+
+        ORDER BY oi.id
+    """
+
+    with connection.cursor() as cursor:
+
+        cursor.execute(items_sql, [order_id])
+
+        rows = cursor.fetchall()
+
+        columns = [col[0] for col in cursor.description]
+
+    items = []
+
+    for row in rows:
+
+        item = dict(zip(columns, row))
+
+        item["mrp"] = float(item["mrp"] or 0)
+        item["selling_price"] = float(item["selling_price"] or 0)
+        item["total_amount"] = float(item["total_amount"] or 0)
+
+        items.append(item)
+
+    order["subtotal"] = float(order["subtotal"] or 0)
+    order["discount_amount"] = float(order["discount_amount"] or 0)
+    order["shipping_amount"] = float(order["shipping_amount"] or 0)
+    order["tax_amount"] = float(order["tax_amount"] or 0)
+    order["grand_total"] = float(order["grand_total"] or 0)
+
+    response = {
+
+        "id": order["id"],
+
+        "order_number": order["order_number"],
+
+        "order_status": order["order_status"],
+
+        "payment_status": order["payment_status"],
+
+        "payment_method": order["payment_method"],
+
+        "ordered_at": order["ordered_at"],
+
+        "shipped_at": order["shipped_at"],
+
+        "delivered_at": order["delivered_at"],
+
+        "cancelled_at": order["cancelled_at"],
+
+        "tracking_id": order["tracking_id"],
+
+        "courier_name": order["courier_name"],
+
+        "address": {
+
+            "customer_name": order["customer_name"],
+
+            "customer_email": order["customer_email"],
+
+            "customer_mobile": order["customer_mobile"],
+
+            "address_line_1": order["address_line_1"],
+
+            "address_line_2": order["address_line_2"],
+
+            "landmark": order["landmark"],
+
+            "city": order["city"],
+
+            "state": order["state"],
+
+            "country": order["country"],
+
+            "pincode": order["pincode"]
+
+        },
+
+        "price_summary": {
+
+            "subtotal": order["subtotal"],
+
+            "discount_amount": order["discount_amount"],
+
+            "shipping_amount": order["shipping_amount"],
+
+            "tax_amount": order["tax_amount"],
+
+            "grand_total": order["grand_total"]
+
+        },
+
+        "items": items
+
+    }
+
+    return {
+
+        "message": "Data fetched successfully.",
+
+        "data": response
+
+    }, status.HTTP_200_OK

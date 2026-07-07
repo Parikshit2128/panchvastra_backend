@@ -259,3 +259,44 @@ coupon_management_schema = extend_schema_view(
         ],
     ),
 )
+
+
+
+
+orders_schema = extend_schema_view(
+
+    get=extend_schema(
+        tags=["Order History"],
+        summary="Retrieve orders",
+        description=(
+            "Returns all orders for the authenticated user or fetches a specific order "
+            "using its unique ID."
+        ),
+        parameters=[
+            OpenApiParameter(
+                name="page",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False
+            ),
+            OpenApiParameter(
+                name="page_size",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False
+            ),
+            OpenApiParameter(
+                name="id",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False
+            ),
+            OpenApiParameter(
+                name="status",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                required=False
+            ),
+        ],
+    ),
+)

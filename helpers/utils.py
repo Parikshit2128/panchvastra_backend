@@ -12,6 +12,8 @@ from django.http import Http404
 import smtplib
 from email.mime.text import MIMEText
 
+from panchvastra.settings import EMAIL_HOST, EMAIL_HOST_PASSWORD, EMAIL_HOST_USER, EMAIL_PORT
+
 
 
 def db_query_result_to_json(query_result, column_names):
@@ -158,15 +160,15 @@ def _store_otp(cursor, user_id, otp, expires_at):
 def send_verification_otp(email, otp):
     msg = MIMEText(f"Your OTP is {otp}. It expires in 10 minutes.")
     msg["Subject"] = "Email Verification OTP"
-    msg["From"] = "parikshitshukla.2128@gmail.com"
+    msg["From"] = EMAIL_HOST_USER
     msg["To"] = email
 
-    server = smtplib.SMTP("smtp.gmail.com", 587)
+    server = smtplib.SMTP(EMAIL_HOST, EMAIL_PORT)
     server.starttls()
 
     server.login(
-        "parikshitshukla.2128@gmail.com",
-        "ngqw rpvo pycq pops"
+        EMAIL_HOST_USER,
+        EMAIL_HOST_PASSWORD
     )
 
     server.send_message(msg)

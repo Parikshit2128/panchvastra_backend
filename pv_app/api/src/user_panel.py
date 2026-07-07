@@ -2,9 +2,9 @@ from rest_framework.decorators import api_view
 from rest_framework import status
 
 from helpers.utils import generic_response_handler
-from pv_app.api.business_logic.bl_user_panel import add_to_cart, create_category, create_coupon, delete_cart_item, delete_category, delete_coupon, get_cart, get_categories, get_coupons, get_product_detail, get_product_listing, update_cart_quantity, update_category, update_coupon
+from pv_app.api.business_logic.bl_user_panel import add_to_cart, create_category, create_coupon, delete_cart_item, delete_category, delete_coupon, get_cart, get_categories, get_coupons, get_order_detail, get_order_listing, get_product_detail, get_product_listing, update_cart_quantity, update_category, update_coupon
 from pv_app.api.serializer.sz_user_panel import AddToCartSerializer, CouponSerializer, CreateCategorySerializer, UpdateCartSerializer, UpdateCategorySerializer, UpdateCouponSerializer
-from pv_app.api.swagger.swag_user_panel import categories_management_schema, products_management_schema, cart_management_schema, coupon_management_schema
+from pv_app.api.swagger.swag_user_panel import categories_management_schema, products_management_schema, cart_management_schema, coupon_management_schema, orders_schema
 
 
 
@@ -161,3 +161,32 @@ def coupon_management(request):
     elif request.method == "DELETE":
         coupon_id = request.GET.get("id")
         return delete_coupon(coupon_id, user_id)
+
+
+
+@orders_schema
+@api_view(["GET"])
+@generic_response_handler
+def orders(request):
+
+    # user_id = request.user_id
+    user_id= 1
+
+    order_id = request.GET.get("id")
+    page = int(request.GET.get("page", 1))
+    page_size = int(request.GET.get("page_size", 10))
+    order_type=request.GET.get("order_type")
+    
+
+    if order_id:
+        return get_order_detail(
+            user_id=user_id,
+            order_id=order_id
+        )
+
+    return get_order_listing(
+        user_id=user_id,
+        page=page,
+        page_size=page_size,
+        order_type=order_type
+    )
