@@ -37,7 +37,7 @@ def register_user_logic(data):
             _store_otp(cursor, user_id, otp, otp_expiry)
 
             connection.commit()
-            # send_verification_otp(email, otp)
+            send_verification_otp(email, otp)
 
             return {"message": "OTP resent to email."}, 200
 
@@ -52,7 +52,7 @@ def register_user_logic(data):
         _store_otp(cursor, user_id, otp, otp_expiry)
 
         connection.commit()
-        # send_verification_otp(email, otp)
+        send_verification_otp(email, otp)
 
         return {"message": "User registered. OTP sent to email."}, 201
     
