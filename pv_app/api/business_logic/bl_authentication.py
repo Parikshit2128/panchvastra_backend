@@ -83,7 +83,7 @@ def login_user_logic(data):
         _store_otp(cursor, user_id, otp, otp_expiry)
 
         connection.commit()
-        # send_verification_otp(email, otp)
+        send_verification_otp(email, otp)
 
         return {"message": "OTP sent to email."}, 200
     
