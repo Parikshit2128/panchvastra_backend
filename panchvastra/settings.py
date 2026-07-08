@@ -237,3 +237,4 @@ EMAIL_USE_TLS = True
 EMAIL_USE_SSL = False
 
 DEFAULT_FROM_EMAIL = "panchvastra9@gmail.com"
+BREVO_API_KEY = os.getenv("BREVO_API_KEY")

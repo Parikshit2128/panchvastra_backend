@@ -4,6 +4,8 @@ import random
 import traceback
 import traceback
 import uuid
+import requests
+from panchvastra.settings import BREVO_API_KEY
 from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
 from django.db import connection
 from rest_framework.response import Response
@@ -162,18 +164,66 @@ def _store_otp(cursor, user_id, otp, expires_at):
 
 def send_verification_otp(email, otp):
     try:
-        msg = MIMEText(f"Your OTP is {otp}. It expires in 10 minutes.")
-        msg["Subject"] = "Email Verification OTP"
-        msg["From"] = EMAIL_HOST_USER
-        msg["To"] = email
+        url = "https://api.brevo.com/v3/smtp/email"
 
-        server = smtplib.SMTP(EMAIL_HOST, EMAIL_PORT)
-        server.starttls()
-        server.login(EMAIL_HOST_USER, EMAIL_HOST_PASSWORD)
-        server.send_message(msg)
-        server.quit()
+        headers = {
+            "accept": "application/json",
+            "api-key": BREVO_API_KEY,
+            "content-type": "application/json"
+        }
 
-    except Exception as e:
-        print("SMTP ERROR:", repr(e))
+        payload = {
+            "sender": {
+                "name": "Panchvastra",
+                "email": "panchvastra9@gmail.com"
+            },
+            "to": [
+                {
+                    "email": email
+                }
+            ],
+            "subject": "Email Verification OTP",
+            "htmlContent": f"""
+                <html>
+                    <body style="font-family: Arial, sans-serif;">
+                        <h2>Panchvastra</h2>
+                        <p>Your OTP for email verification is:</p>
+
+                        <div style="
+                            font-size:32px;
+                            font-weight:bold;
+                            letter-spacing:6px;
+                            color:#0d6efd;
+                            margin:20px 0;">
+                            {otp}
+                        </div>
+
+                        <p>This OTP is valid for <b>10 minutes</b>.</p>
+
+                        <hr>
+
+                        <small>
+                            If you didn't request this OTP, you can safely ignore this email.
+                        </small>
+                    </body>
+                </html>
+            """
+        }
+
+        response = requests.post(
+            url,
+            headers=headers,
+            json=payload,
+            timeout=20
+        )
+
+        if response.status_code not in (200, 201):
+            raise Exception(
+                f"Brevo API Error {response.status_code}: {response.text}"
+            )
+
+        print("OTP email sent successfully.")
+
+    except Exception:
         traceback.print_exc()
         raise
