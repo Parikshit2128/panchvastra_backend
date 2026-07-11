@@ -1,6 +1,7 @@
 from rest_framework.decorators import api_view
 from rest_framework import status
 
+from helpers.middleware import user_authentication_required
 from helpers.utils import generic_response_handler
 from pv_app.api.business_logic.bl_user_panel import add_to_cart, create_category, create_coupon, delete_cart_item, delete_category, delete_coupon, get_cart, get_categories, get_coupons, get_order_detail, get_order_listing, get_product_detail, get_product_listing, update_cart_quantity, update_category, update_coupon
 from pv_app.api.serializer.sz_user_panel import AddToCartSerializer, CouponSerializer, CreateCategorySerializer, UpdateCartSerializer, UpdateCategorySerializer, UpdateCouponSerializer
@@ -9,15 +10,13 @@ from pv_app.api.swagger.swag_user_panel import categories_management_schema, pro
 
 
 @categories_management_schema
-# @user_authentication_required(
-#     role_required=(settings.FINANCE_ADMIN_ID, settings.PLATFORM_VIEWER)
-# )
+@user_authentication_required(role_required=2)
 @api_view(["GET", "POST", "PUT", "DELETE"])
 @generic_response_handler
 def categories_management(request):
 
-    # user_id = request.user_id
-    user_id= 1
+    user_id = request.user_id
+    # user_id= 1
 
     if request.method == "POST":
         serializer = CreateCategorySerializer(data=request.data)
@@ -108,10 +107,13 @@ def products_management(request):
 
 
 @cart_management_schema
+@user_authentication_required(role_required=2)
 @api_view(["GET", "POST", "PUT", "DELETE"])
 @generic_response_handler
 def cart_management(request):
-    user_id = 1 
+    
+    user_id = request.user_id
+    # user_id = 1 
 
     if request.method == "POST":
         serializer = AddToCartSerializer(data=request.data)
@@ -133,10 +135,11 @@ def cart_management(request):
 
 
 @coupon_management_schema
+@user_authentication_required(role_required=2)
 @api_view(["GET", "POST", "PUT", "DELETE"])
 @generic_response_handler
 def coupon_management(request):
-    user_id = 1
+    user_id = request.user_id
 
     if request.method == "POST":
         serializer = CouponSerializer(data=request.data)
@@ -165,12 +168,13 @@ def coupon_management(request):
 
 
 @orders_schema
+@user_authentication_required(role_required=2)
 @api_view(["GET"])
 @generic_response_handler
 def orders(request):
 
-    # user_id = request.user_id
-    user_id= 1
+    user_id = request.user_id
+    # user_id= 1
 
     order_id = request.GET.get("id")
     page = int(request.GET.get("page", 1))

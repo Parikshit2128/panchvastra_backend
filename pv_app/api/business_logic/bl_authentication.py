@@ -108,7 +108,6 @@ def verify_user_email_logic(data):
 
         user_id, role_id, first_name, last_name, email = user
 
-        # get latest OTP
         cursor.execute("""
             SELECT otp, expires_at
             FROM user_otps
@@ -124,14 +123,12 @@ def verify_user_email_logic(data):
 
         db_otp, expires_at = otp_row
 
-        # expiry check
         if datetime.now(timezone.utc) > expires_at.replace(tzinfo=timezone.utc):
             return {"message": "OTP expired."}, 400
 
         if otp != db_otp:
             return {"message": "Invalid OTP."}, 400
 
-        # verify user
         cursor.execute("""
             UPDATE users
             SET email_verified=TRUE,
@@ -141,10 +138,9 @@ def verify_user_email_logic(data):
 
         connection.commit()
 
-    # JWT
     payload = {
         "user_id": user_id,
-        "role_id": role_id,
+        "user_role_id": role_id,
         "exp": datetime.now(timezone.utc) + timedelta(days=15)
     }
 

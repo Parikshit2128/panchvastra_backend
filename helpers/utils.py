@@ -4,8 +4,9 @@ import random
 import traceback
 import traceback
 import uuid
+import jwt
 import requests
-from panchvastra.settings import BREVO_API_KEY
+from panchvastra.settings import BREVO_API_KEY, SECRET_KEY
 from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
 from django.db import connection
 from rest_framework.response import Response
@@ -17,6 +18,7 @@ import smtplib
 from email.mime.text import MIMEText
 
 from panchvastra.settings import EMAIL_HOST, EMAIL_HOST_PASSWORD, EMAIL_HOST_USER, EMAIL_PORT
+from django.http import JsonResponse
 
 
 
@@ -227,3 +229,18 @@ def send_verification_otp(email, otp):
     except Exception:
         traceback.print_exc()
         raise
+
+
+
+def decode_jwt_token(token):
+    if not token:
+        raise ValueError("Token is missing")
+    
+    token = token.replace("Bearer ", "").strip()
+    try:
+        decoded_payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        return decoded_payload
+    except jwt.ExpiredSignatureError:
+        return JsonResponse({"message": "Token expired"}, status=401)
+    except jwt.InvalidTokenError:
+        return JsonResponse({"message": "Invalid token"}, status=401)

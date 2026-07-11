@@ -1057,7 +1057,7 @@ def delete_cart_item(cart_item_id, user_id):
     with connection.cursor() as cursor:
         cursor.execute("""
             UPDATE public.cart_items 
-            SET is_deleted = TRUE, is_active = FALSE, updated_at = CURRENT_TIMESTAMP, updated_by = %s
+            SET quantity = 0, is_deleted = TRUE, is_active = FALSE, updated_at = CURRENT_TIMESTAMP, updated_by = %s
             WHERE id = %s AND user_id = %s
             RETURNING id;
         """, [user_id, cart_item_id, user_id])
