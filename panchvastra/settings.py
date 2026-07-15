@@ -165,6 +165,8 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:5500",
     "http://localhost:5173",
     "https://panchvastra-red.vercel.app",
+    "http://192.168.1.11:8001",
+    "https://7d70-2401-4900-1ca3-d17b-7888-b958-f7f0-696e.ngrok-free.app"
 ]
 
 CORS_ALLOW_METHODS = [
@@ -240,3 +242,9 @@ EMAIL_USE_SSL = False
 
 DEFAULT_FROM_EMAIL = "panchvastra9@gmail.com"
 BREVO_API_KEY = os.getenv("BREVO_API_KEY")
+
+
+
+IMAGEKIT_PUBLIC_KEY = os.getenv("IMAGEKIT_PUBLIC_KEY")
+IMAGEKIT_PRIVATE_KEY = os.getenv("IMAGEKIT_PRIVATE_KEY")
+IMAGEKIT_URL_ENDPOINT = os.getenv("IMAGEKIT_URL_ENDPOINT")

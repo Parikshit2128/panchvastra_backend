@@ -10,6 +10,11 @@ class UserLoginSerializer(serializers.Serializer):
     email = serializers.EmailField()
 
 
+class AdminLoginSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    password = serializers.CharField(max_length=128, write_only=True)
+    
+
 class VerifyEmailSerializer(serializers.Serializer):
     email = serializers.EmailField()
     otp = serializers.CharField(max_length=6)

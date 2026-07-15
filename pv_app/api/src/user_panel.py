@@ -1,4 +1,5 @@
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, parser_classes
+from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework import status
 
 from helpers.middleware import user_authentication_required
@@ -10,13 +11,14 @@ from pv_app.api.swagger.swag_user_panel import categories_management_schema, pro
 
 
 @categories_management_schema
-@user_authentication_required(role_required=2)
+# @user_authentication_required(role_required=[1, 2])
 @api_view(["GET", "POST", "PUT", "DELETE"])
+@parser_classes([MultiPartParser, FormParser])
 @generic_response_handler
 def categories_management(request):
 
-    user_id = request.user_id
-    # user_id= 1
+    # user_id = request.user_id
+    user_id= 1
 
     if request.method == "POST":
         serializer = CreateCategorySerializer(data=request.data)

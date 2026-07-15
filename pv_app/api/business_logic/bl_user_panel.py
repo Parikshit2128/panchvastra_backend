@@ -4,14 +4,26 @@ import math
 from django.db import connection
 from rest_framework import status
 
-from helpers.utils import db_query_result_to_json, paginate_queryset
+from helpers.utils import db_query_result_to_json, delete_image_from_imagekit, paginate_queryset, upload_image_to_imagekit
 
 def create_category(data, user_id):
 
     name = data.get("name")
     description = data.get("description")
-    image_url = data.get("image_url")
+    image = data.get("image")
     is_active = data.get("is_active", True)
+
+    image_url = None
+    imagekit_file_id = None
+
+    if image:
+        uploaded_image = upload_image_to_imagekit(
+            image=image,
+            folder="/categories"
+        )
+
+        image_url = uploaded_image["url"]
+        imagekit_file_id = uploaded_image["file_id"]
 
     with connection.cursor() as cursor:
 
@@ -38,6 +50,7 @@ def create_category(data, user_id):
                 name,
                 description,
                 image_url,
+                imagekit_file_id,
                 is_active,
                 created_by,
                 updated_by,
@@ -46,6 +59,7 @@ def create_category(data, user_id):
             )
             VALUES
             (
+                %s,
                 %s,
                 %s,
                 %s,
@@ -61,6 +75,7 @@ def create_category(data, user_id):
                 name,
                 description,
                 image_url,
+                imagekit_file_id,
                 is_active,
                 user_id,
                 user_id
@@ -174,15 +189,38 @@ def update_category(data, user_id):
 
     category_id = data.get("id")
 
+    image = data.get("image")
+
     updatable_fields = [
         "name",
         "description",
-        "image_url",
         "is_active"
     ]
 
     set_parts = []
     values = []
+
+    with connection.cursor() as cursor:
+
+        cursor.execute(
+            """
+            SELECT imagekit_file_id
+            FROM categories
+            WHERE id = %s
+            AND is_deleted = FALSE
+            """,
+            [category_id]
+        )
+
+        row = cursor.fetchone()
+
+        if not row:
+            return {
+                "message": "Category not found.",
+                "data": {}
+            }, status.HTTP_404_NOT_FOUND
+
+        old_file_id = row[0]
 
     for field in updatable_fields:
 
@@ -196,7 +234,7 @@ def update_category(data, user_id):
                         """
                         SELECT 1
                         FROM categories
-                        WHERE LOWER(name)=LOWER(%s)
+                        WHERE LOWER(name) = LOWER(%s)
                         AND id <> %s
                         AND is_deleted = FALSE
                         """,
@@ -215,9 +253,26 @@ def update_category(data, user_id):
             set_parts.append(f"{field} = %s")
             values.append(data[field])
 
+    if image:
+
+        if old_file_id:
+            delete_image_from_imagekit(old_file_id)
+
+        uploaded = upload_image_to_imagekit(
+            image=image,
+            folder="/categories"
+        )
+
+        set_parts.append("image_url = %s")
+        values.append(uploaded["url"])
+
+        set_parts.append("imagekit_file_id = %s")
+        values.append(uploaded["file_id"])
+
     if not set_parts:
         return {
-            "message": "No fields to update."
+            "message": "No fields to update.",
+            "data": {}
         }, status.HTTP_400_BAD_REQUEST
 
     set_parts.append("updated_by = %s")
@@ -270,6 +325,26 @@ def delete_category(category_id, user_id):
 
         cursor.execute(
             """
+            SELECT imagekit_file_id
+            FROM categories
+            WHERE id = %s
+            AND is_deleted = FALSE
+            """,
+            [category_id]
+        )
+
+        row = cursor.fetchone()
+
+        if not row:
+            return {
+                "message": "Category not found.",
+                "data": {}
+            }, status.HTTP_404_NOT_FOUND
+
+        imagekit_file_id = row[0]
+
+        cursor.execute(
+            """
             UPDATE categories
             SET
                 is_deleted = TRUE,
@@ -284,12 +359,13 @@ def delete_category(category_id, user_id):
             ]
         )
 
-        if cursor.rowcount == 0:
-            return {
-                "message": "Category not found."
-            }, status.HTTP_404_NOT_FOUND
-
         connection.commit()
+
+    if imagekit_file_id:
+        try:
+            delete_image_from_imagekit(imagekit_file_id)
+        except Exception:
+            pass
 
     return {
         "message": "Category deleted successfully.",
@@ -1716,3 +1792,379 @@ def get_order_detail(user_id, order_id):
         "data": response
 
     }, status.HTTP_200_OK
+
+
+
+
+def create_product(data, user_id):
+
+    category_id = data.get("category_id")
+    sub_category_id = data.get("sub_category_id")
+
+    name = data.get("name").strip()
+    description = data.get("description")
+    fabric = data.get("fabric")
+    gsm = data.get("gsm")
+
+    is_featured = data.get("is_featured", False)
+    is_new_arrival = data.get("is_new_arrival", False)
+    is_active = data.get("is_active", True)
+
+    key_highlights = json.dumps(
+        data.get("key_highlights", {})
+    )
+
+    tags = data.get("tags", [])
+    variants = data.get("variants", [])
+
+    with connection.cursor() as cursor:
+
+        try:
+
+            # --------------------------------------------------
+            # Product Name Validation
+            # --------------------------------------------------
+
+            cursor.execute(
+                """
+                SELECT 1
+                FROM products
+                WHERE LOWER(name)=LOWER(%s)
+                AND is_deleted=FALSE
+                """,
+                [name]
+            )
+
+            if cursor.fetchone():
+                return {
+                    "message": "Product already exists.",
+                    "data": {}
+                }, status.HTTP_400_BAD_REQUEST
+
+            # --------------------------------------------------
+            # Category Validation
+            # --------------------------------------------------
+
+            cursor.execute(
+                """
+                SELECT 1
+                FROM categories
+                WHERE id=%s
+                AND is_deleted=FALSE
+                AND is_active=TRUE
+                """,
+                [category_id]
+            )
+
+            if not cursor.fetchone():
+                return {
+                    "message": "Category not found.",
+                    "data": {}
+                }, status.HTTP_404_NOT_FOUND
+
+            # --------------------------------------------------
+            # Sub Category Validation
+            # --------------------------------------------------
+
+            if sub_category_id:
+
+                cursor.execute(
+                    """
+                    SELECT 1
+                    FROM sub_categories
+                    WHERE id=%s
+                    AND category_id=%s
+                    AND is_deleted=FALSE
+                    AND is_active=TRUE
+                    """,
+                    [
+                        sub_category_id,
+                        category_id
+                    ]
+                )
+
+                if not cursor.fetchone():
+                    return {
+                        "message": "Sub category not found.",
+                        "data": {}
+                    }, status.HTTP_404_NOT_FOUND
+
+            # --------------------------------------------------
+            # Tag Validation
+            # --------------------------------------------------
+
+            if tags:
+
+                cursor.execute(
+                    """
+                    SELECT id
+                    FROM product_tags
+                    WHERE id = ANY(%s)
+                    AND is_deleted = FALSE
+                    AND is_active = TRUE
+                    """,
+                    [tags]
+                )
+
+                existing_tags = {
+                    row[0]
+                    for row in cursor.fetchall()
+                }
+
+                invalid_tags = [
+                    tag
+                    for tag in tags
+                    if tag not in existing_tags
+                ]
+
+                if invalid_tags:
+                    return {
+                        "message": "Invalid tag ids.",
+                        "data": {
+                            "invalid_tag_ids": invalid_tags
+                        }
+                    }, status.HTTP_400_BAD_REQUEST
+
+            # --------------------------------------------------
+            # SKU Validation
+            # --------------------------------------------------
+
+            sku_list = [
+                variant["sku"]
+                for variant in variants
+            ]
+
+            if sku_list:
+
+                cursor.execute(
+                    """
+                    SELECT sku
+                    FROM product_variants
+                    WHERE sku = ANY(%s)
+                    AND is_deleted = FALSE
+                    """,
+                    [sku_list]
+                )
+
+                existing_skus = [
+                    row[0]
+                    for row in cursor.fetchall()
+                ]
+
+                if existing_skus:
+                    return {
+                        "message": "SKU already exists.",
+                        "data": {
+                            "existing_skus": existing_skus
+                        }
+                    }, status.HTTP_400_BAD_REQUEST
+
+            # --------------------------------------------------
+            # Insert Product
+            # --------------------------------------------------
+
+            cursor.execute(
+                """
+                INSERT INTO products
+                (
+                    category_id,
+                    sub_category_id,
+                    name,
+                    description,
+                    fabric,
+                    gsm,
+                    is_featured,
+                    is_new_arrival,
+                    key_highlights,
+                    is_active,
+                    created_by,
+                    updated_by,
+                    created_at,
+                    updated_at
+                )
+                VALUES
+                (
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    NOW(),
+                    NOW()
+                )
+                RETURNING id
+                """,
+                [
+                    category_id,
+                    sub_category_id,
+                    name,
+                    description,
+                    fabric,
+                    gsm,
+                    is_featured,
+                    is_new_arrival,
+                    key_highlights,
+                    is_active,
+                    user_id,
+                    user_id
+                ]
+            )
+
+            product_id = cursor.fetchone()[0]
+
+                        # --------------------------------------------------
+            # Insert Product Tags
+            # --------------------------------------------------
+
+            if tags:
+
+                cursor.executemany(
+                    """
+                    INSERT INTO product_tag_mapping
+                    (
+                        product_id,
+                        tag_id,
+                        created_by,
+                        updated_by,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES
+                    (
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        NOW(),
+                        NOW()
+                    )
+                    """,
+                    [
+                        (
+                            product_id,
+                            tag_id,
+                            user_id,
+                            user_id
+                        )
+                        for tag_id in tags
+                    ]
+                )
+            
+                        # --------------------------------------------------
+            # Insert Product Variants
+            # --------------------------------------------------
+
+            for variant in variants:
+
+                cursor.execute(
+                    """
+                    INSERT INTO product_variants
+                    (
+                        product_id,
+                        sku,
+                        color,
+                        mrp,
+                        selling_price,
+                        cost_price,
+                        is_default,
+                        is_active,
+                        created_by,
+                        updated_by,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES
+                    (
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        TRUE,
+                        %s,
+                        %s,
+                        NOW(),
+                        NOW()
+                    )
+                    RETURNING id
+                    """,
+                    [
+                        product_id,
+                        variant["sku"],
+                        variant["color"],
+                        variant["mrp"],
+                        variant["selling_price"],
+                        variant.get("cost_price"),
+                        variant["is_default"],
+                        user_id,
+                        user_id
+                    ]
+                )
+
+                variant_id = cursor.fetchone()[0]
+
+
+                sizes = variant.get("sizes", [])
+
+                if sizes:
+
+                    cursor.executemany(
+                        """
+                        INSERT INTO product_variant_sizes
+                        (
+                            variant_id,
+                            size,
+                            stock_quantity,
+                            is_active,
+                            created_by,
+                            updated_by,
+                            created_at,
+                            updated_at
+                        )
+                        VALUES
+                        (
+                            %s,
+                            %s,
+                            %s,
+                            TRUE,
+                            %s,
+                            %s,
+                            NOW(),
+                            NOW()
+                        )
+                        """,
+                        [
+                            (
+                                variant_id,
+                                size["size"],
+                                size["stock_quantity"],
+                                user_id,
+                                user_id
+                            )
+                            for size in sizes
+                        ]
+                    )
+
+            connection.commit()
+
+        except Exception:
+            connection.rollback()
+            raise
+
+    product_data, _ = get_product_detail(
+        product_id=product_id
+    )
+
+    return {
+        "message": "Product created successfully.",
+        "data": product_data.get("data")
+    }, status.HTTP_201_CREATED

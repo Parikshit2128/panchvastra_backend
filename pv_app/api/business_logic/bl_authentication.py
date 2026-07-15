@@ -4,7 +4,8 @@ from helpers.utils import _store_otp, generate_otp_with_expiry, send_verificatio
 import jwt
 from datetime import datetime, timedelta, timezone
 
-SECRET_KEY = "your-secret"
+from panchvastra.settings import SECRET_KEY
+from django.contrib.auth.hashers import check_password
 
 
 def register_user_logic(data):
@@ -149,4 +150,79 @@ def verify_user_email_logic(data):
     return {
         "message": "Email verified successfully.",
         "token": token
+    }, 200
+
+
+
+def login_admin_logic(data):
+    email = data["email"].lower().strip()
+    password = data["password"]
+
+    with connection.cursor() as cursor:
+
+        cursor.execute("""
+            SELECT
+                id,
+                role_id,
+                first_name,
+                last_name,
+                email,
+                mobile,
+                password_hash,
+                profile_image
+            FROM users
+            WHERE email=%s
+              AND role_id = 1
+              AND is_deleted=FALSE
+              AND is_active=TRUE
+        """, [email])
+
+        user = cursor.fetchone()
+
+        if not user:
+            return {"message": "Invalid email or password."}, 401
+
+        (
+            user_id,
+            role_id,
+            first_name,
+            last_name,
+            email,
+            mobile,
+            password_hash,
+            profile_image
+        ) = user
+
+        print("users:", user)
+        if not check_password(password, password_hash):
+            return {"message": "Invalid email or password."}, 401
+
+        cursor.execute("""
+            UPDATE users
+            SET last_login_at = NOW()
+            WHERE id = %s
+        """, [user_id])
+
+        connection.commit()
+
+    payload = {
+        "user_id": user_id,
+        "user_role_id": role_id,
+        "exp": datetime.now(timezone.utc) + timedelta(days=15)
+    }
+
+    token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+
+    return {
+        "message": "Login successful.",
+        "token": token,
+        "user": {
+            "id": user_id,
+            "role_id": role_id,
+            "first_name": first_name,
+            "last_name": last_name,
+            "email": email,
+            "mobile": mobile,
+            "profile_image": profile_image
+        }
     }, 200

@@ -39,16 +39,19 @@ categories_management_schema = extend_schema_view(
             )
         ],
     ),
+
     post=extend_schema(
         tags=["Categories"],
         description="Create a new category.",
         request=CreateCategorySerializer,
     ),
+
     put=extend_schema(
         tags=["Categories"],
         description="Update an existing category.",
         request=UpdateCategorySerializer,
     ),
+
     delete=extend_schema(
         tags=["Categories"],
         description="Soft delete a category.",

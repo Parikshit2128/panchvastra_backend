@@ -1,6 +1,6 @@
 from django.urls import path
 
-from pv_app.api.src.authentication import login_user, register_user, verify_email
+from pv_app.api.src.authentication import login_admin, login_user, register_user, verify_email
 from pv_app.api.src.user_panel import cart_management, categories_management, coupon_management, orders, products_management
 
 urlpatterns = [
@@ -12,4 +12,7 @@ urlpatterns = [
     path('cart_management/', cart_management, name='cart_management'),
     path('coupon_management/', coupon_management, name='coupon_management'),
     path('orders/', orders, name='orders'),
+
+    #Admin Panel APIs
+    path('login_admin/', login_admin, name='login_admin'),
 ]

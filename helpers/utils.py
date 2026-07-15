@@ -1,12 +1,15 @@
+import base64
 from datetime import date, datetime, timedelta, timezone
 import decimal
+import inspect
 import random
 import traceback
 import traceback
 import uuid
+from imagekitio import ImageKit
 import jwt
 import requests
-from panchvastra.settings import BREVO_API_KEY, SECRET_KEY
+from panchvastra.settings import BREVO_API_KEY, IMAGEKIT_PRIVATE_KEY, IMAGEKIT_PUBLIC_KEY, IMAGEKIT_URL_ENDPOINT, SECRET_KEY
 from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
 from django.db import connection
 from rest_framework.response import Response
@@ -19,7 +22,7 @@ from email.mime.text import MIMEText
 
 from panchvastra.settings import EMAIL_HOST, EMAIL_HOST_PASSWORD, EMAIL_HOST_USER, EMAIL_PORT
 from django.http import JsonResponse
-
+from imagekitio.models.UploadFileRequestOptions import UploadFileRequestOptions
 
 
 def db_query_result_to_json(query_result, column_names):
@@ -233,14 +236,74 @@ def send_verification_otp(email, otp):
 
 
 def decode_jwt_token(token):
+
     if not token:
-        raise ValueError("Token is missing")
-    
-    token = token.replace("Bearer ", "").strip()
-    try:
-        decoded_payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-        return decoded_payload
-    except jwt.ExpiredSignatureError:
-        return JsonResponse({"message": "Token expired"}, status=401)
-    except jwt.InvalidTokenError:
-        return JsonResponse({"message": "Invalid token"}, status=401)
+        raise ValueError("Authorization token is missing.")
+
+    token = token.strip()
+
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+
+    if not token:
+        raise ValueError("Authorization token is empty.")
+
+    return jwt.decode(
+        token,
+        SECRET_KEY,
+        algorithms=["HS256"]
+    )
+
+print(inspect.signature(ImageKit))
+
+imagekit = ImageKit(
+    public_key=IMAGEKIT_PUBLIC_KEY,
+    private_key=IMAGEKIT_PRIVATE_KEY,
+    url_endpoint=IMAGEKIT_URL_ENDPOINT,
+)
+
+
+def upload_image_to_imagekit(image, folder):
+
+    image_base64 = base64.b64encode(
+        image.read()
+    ).decode("utf-8")
+
+    options = UploadFileRequestOptions(
+        folder=folder
+    )
+
+    response = imagekit.upload_file(
+        file=image_base64,
+        file_name=f"{uuid.uuid4()}_{image.name}",
+        options=options
+    )
+
+    return {
+        "url": response.url,
+        "file_id": response.file_id,
+        "name": response.name
+    }
+
+
+
+def delete_image_from_imagekit(file_id):
+
+    if not file_id:
+        return
+
+    imagekit.delete_file(file_id)
+
+
+def replace_image(
+    old_file_id,
+    new_image,
+    folder
+):
+
+    delete_image(old_file_id)
+
+    return upload_image(
+        new_image,
+        folder
+    )
