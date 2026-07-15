@@ -5,7 +5,7 @@ from drf_spectacular.utils import (
     OpenApiTypes
 )
 
-from pv_app.api.serializer.sz_user_panel import AddToCartSerializer, CouponSerializer, CreateCategorySerializer, UpdateCartSerializer, UpdateCategorySerializer, UpdateCouponSerializer
+from pv_app.api.serializer.sz_user_panel import AddToCartSerializer, CouponSerializer, CreateCategorySerializer, CreateProductSerializer, UpdateCartSerializer, UpdateCategorySerializer, UpdateCouponSerializer, UpdateProductSerializer
 
 
 categories_management_schema = extend_schema_view(
@@ -67,9 +67,13 @@ categories_management_schema = extend_schema_view(
 )
 
 
+
 products_management_schema = extend_schema_view(
+
     get=extend_schema(
         tags=["Products"],
+        summary="Get Product(s)",
+        description="Fetch product listing or product details.",
         parameters=[
             OpenApiParameter(
                 name="page",
@@ -111,7 +115,7 @@ products_management_schema = extend_schema_view(
                 type=OpenApiTypes.STR,
                 location=OpenApiParameter.QUERY,
                 required=False,
-                description="Filter by size. Example: S, M, L, XL"
+                description="Filter by size (S, M, L, XL)"
             ),
             OpenApiParameter(
                 name="min_price",
@@ -132,7 +136,7 @@ products_management_schema = extend_schema_view(
                 type=OpenApiTypes.STR,
                 location=OpenApiParameter.QUERY,
                 required=False,
-                description="Search by product name, description, fabric, or color"
+                description="Search by product name, description, fabric or color"
             ),
             OpenApiParameter(
                 name="sort_by",
@@ -155,9 +159,48 @@ products_management_schema = extend_schema_view(
                 description="Filter by tag"
             ),
         ],
-    )
-)
+    ),
 
+    post=extend_schema(
+        tags=["Products"],
+        summary="Create Product",
+        description="Create a new product with variants, sizes and images.",
+        request=CreateProductSerializer,
+    ),
+
+    put=extend_schema(
+        tags=["Products"],
+        summary="Update Product",
+        description="""
+        Update an existing product.
+
+        Business Rules:
+        - If id exists in child records → Update.
+        - If id is missing → Create new child.
+        - delete_variant_ids → Soft delete variants.
+        - delete_variant_size_ids → Soft delete variant sizes.
+        - delete_product_image_ids → Soft delete product images.
+        - delete_variant_image_ids → Soft delete variant images.
+        """,
+        request=UpdateProductSerializer,
+    ),
+
+    delete=extend_schema(
+        tags=["Products"],
+        summary="Delete Product",
+        description="Soft delete a product.",
+        parameters=[
+            OpenApiParameter(
+                name="id",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description="Unique ID of the product to delete."
+
+    ),
+        ],
+    ),
+)
 
 
 cart_management_schema = extend_schema_view(

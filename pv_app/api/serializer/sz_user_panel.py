@@ -90,6 +90,7 @@ class ProductVariantSizeSerializer(serializers.Serializer):
     stock_quantity = serializers.IntegerField(
         min_value=0
     )
+    is_active = serializers.BooleanField(required=False, default=True)
 
 
 class ProductVariantSerializer(serializers.Serializer):
@@ -121,7 +122,8 @@ class ProductVariantSerializer(serializers.Serializer):
         allow_null=True
     )
 
-    is_default = serializers.BooleanField(default=False)
+    is_default = serializers.BooleanField(required=False, default=False)
+    is_active = serializers.BooleanField(required=False, default=True)
 
     sizes = ProductVariantSizeSerializer(
         many=True
@@ -184,33 +186,9 @@ class CreateProductSerializer(serializers.Serializer):
     )
 
     variants = ProductVariantSerializer(
-        many=True
+        many=True, required=False, allow_empty=False
     )
 
-    def validate(self, attrs):
-
-        variants = attrs["variants"]
-
-        if len(variants) == 0:
-            raise serializers.ValidationError(
-                {
-                    "variants": "At least one variant is required."
-                }
-            )
-
-        default_count = sum(
-            variant.get("is_default", False)
-            for variant in variants
-        )
-
-        if default_count != 1:
-            raise serializers.ValidationError(
-                {
-                    "variants": "Exactly one default variant is required."
-                }
-            )
-
-        return attrs
     
 
 
@@ -218,4 +196,21 @@ class UpdateProductSerializer(CreateProductSerializer):
 
     id = serializers.IntegerField()
 
-    
+    delete_tag_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        required=False,
+        default=list
+    )
+
+    delete_variant_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        required=False,
+        default=list
+    )
+
+    delete_size_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        required=False,
+        default=list
+    )
+

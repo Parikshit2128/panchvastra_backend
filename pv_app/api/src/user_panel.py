@@ -4,8 +4,8 @@ from rest_framework import status
 
 from helpers.middleware import user_authentication_required
 from helpers.utils import generic_response_handler
-from pv_app.api.business_logic.bl_user_panel import add_to_cart, create_category, create_coupon, delete_cart_item, delete_category, delete_coupon, get_cart, get_categories, get_coupons, get_order_detail, get_order_listing, get_product_detail, get_product_listing, update_cart_quantity, update_category, update_coupon
-from pv_app.api.serializer.sz_user_panel import AddToCartSerializer, CouponSerializer, CreateCategorySerializer, UpdateCartSerializer, UpdateCategorySerializer, UpdateCouponSerializer
+from pv_app.api.business_logic.bl_user_panel import add_to_cart, create_category, create_coupon, create_product, delete_cart_item, delete_category, delete_coupon, delete_product, get_cart, get_categories, get_coupons, get_order_detail, get_order_listing, get_product_detail, get_product_listing, update_cart_quantity, update_category, update_coupon, update_product
+from pv_app.api.serializer.sz_user_panel import AddToCartSerializer, CouponSerializer, CreateCategorySerializer, CreateProductSerializer, UpdateCartSerializer, UpdateCategorySerializer, UpdateCouponSerializer, UpdateProductSerializer
 from pv_app.api.swagger.swag_user_panel import categories_management_schema, products_management_schema, cart_management_schema, coupon_management_schema, orders_schema
 
 
@@ -81,31 +81,165 @@ def categories_management(request):
 #         tag=request.GET.get("tag"),
 #     )
 
+# @products_management_schema
+# @api_view(["GET"])
+# @generic_response_handler
+# def products_management(request):
+
+#     product_id = request.GET.get("id")
+
+#     if product_id:
+#         return get_product_detail(
+#             product_id=product_id
+#         )
+
+#     return get_product_listing(
+#         page=request.GET.get("page", 1),
+#         page_size=request.GET.get("page_size", 20),
+#         category_id=request.GET.get("category_id"),
+#         sub_category_id=request.GET.get("sub_category_id"),
+#         tag=request.GET.get("tag"),
+#         color=request.GET.get("color"),
+#         size=request.GET.get("size"),
+#         min_price=request.GET.get("min_price"),
+#         max_price=request.GET.get("max_price"),
+#         search=request.GET.get("search"),
+#         sort_by=request.GET.get("sort_by", "latest")
+#     )
+
+
+
 @products_management_schema
-@api_view(["GET"])
+# @user_authentication_required(role_required=[1, 2])
+@api_view(["GET", "POST", "PUT", "DELETE"])
 @generic_response_handler
 def products_management(request):
 
-    product_id = request.GET.get("id")
+    # user_id = request.user_id
+    user_id = 1
 
-    if product_id:
-        return get_product_detail(
-            product_id=product_id
+    if request.method == "POST":
+
+        serializer = CreateProductSerializer(
+            data=request.data
+        )
+        serializer.is_valid(raise_exception=True)
+
+        return create_product(
+            serializer.validated_data,
+            user_id
         )
 
-    return get_product_listing(
-        page=request.GET.get("page", 1),
-        page_size=request.GET.get("page_size", 20),
-        category_id=request.GET.get("category_id"),
-        sub_category_id=request.GET.get("sub_category_id"),
-        tag=request.GET.get("tag"),
-        color=request.GET.get("color"),
-        size=request.GET.get("size"),
-        min_price=request.GET.get("min_price"),
-        max_price=request.GET.get("max_price"),
-        search=request.GET.get("search"),
-        sort_by=request.GET.get("sort_by", "latest")
-    )
+    elif request.method == "GET":
+
+        product_id = request.GET.get("id")
+
+        if product_id:
+            return get_product_detail(
+                product_id=product_id
+            )
+
+        return get_product_listing(
+            page=request.GET.get("page", 1),
+            page_size=request.GET.get("page_size", 20),
+            category_id=request.GET.get("category_id"),
+            sub_category_id=request.GET.get("sub_category_id"),
+            tag=request.GET.get("tag"),
+            color=request.GET.get("color"),
+            size=request.GET.get("size"),
+            min_price=request.GET.get("min_price"),
+            max_price=request.GET.get("max_price"),
+            search=request.GET.get("search"),
+            sort_by=request.GET.get("sort_by", "latest")
+        )
+
+    elif request.method == "PUT":
+
+        serializer = UpdateProductSerializer(
+            data=request.data
+        )
+        serializer.is_valid(raise_exception=True)
+
+        return update_product(
+            serializer.validated_data,
+            user_id
+        )
+
+    elif request.method == "DELETE":
+
+        product_id = request.GET.get("id")
+
+        return delete_product(
+            product_id,
+            user_id
+        )
+
+
+
+# @products_management_schema
+# # @user_authentication_required(role_required=[1, 2])
+# @api_view(["GET", "POST", "PUT", "DELETE"])
+# @generic_response_handler
+# def products_management(request):
+
+#     # user_id = request.user_id
+#     user_id = 1
+
+#     if request.method == "POST":
+
+#         serializer = CreateProductSerializer(
+#             data=request.data
+#         )
+#         serializer.is_valid(raise_exception=True)
+
+#         return create_product(
+#             serializer.validated_data,
+#             user_id
+#         )
+
+#     elif request.method == "GET":
+
+#         product_id = request.GET.get("id")
+
+#         if product_id:
+#             return get_product_detail(
+#                 product_id=product_id
+#             )
+
+#         return get_product_listing(
+#             page=request.GET.get("page", 1),
+#             page_size=request.GET.get("page_size", 20),
+#             category_id=request.GET.get("category_id"),
+#             sub_category_id=request.GET.get("sub_category_id"),
+#             tag=request.GET.get("tag"),
+#             color=request.GET.get("color"),
+#             size=request.GET.get("size"),
+#             min_price=request.GET.get("min_price"),
+#             max_price=request.GET.get("max_price"),
+#             search=request.GET.get("search"),
+#             sort_by=request.GET.get("sort_by", "latest")
+#         )
+
+#     elif request.method == "PUT":
+
+#         serializer = UpdateProductSerializer(
+#             data=request.data
+#         )
+#         serializer.is_valid(raise_exception=True)
+
+#         return update_product(
+#             serializer.validated_data,
+#             user_id
+#         )
+
+#     elif request.method == "DELETE":
+
+#         product_id = request.GET.get("id")
+
+#         return delete_product(
+#             product_id,
+#             user_id
+#         )
 
 
 @cart_management_schema
@@ -196,3 +330,6 @@ def orders(request):
         page_size=page_size,
         order_type=order_type
     )
+
+
+

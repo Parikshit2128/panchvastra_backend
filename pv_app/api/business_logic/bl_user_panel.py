@@ -3,7 +3,7 @@ import math
 
 from django.db import connection
 from rest_framework import status
-
+from django.db import transaction
 from helpers.utils import db_query_result_to_json, delete_image_from_imagekit, paginate_queryset, upload_image_to_imagekit
 
 def create_category(data, user_id):
@@ -1795,7 +1795,7 @@ def get_order_detail(user_id, order_id):
 
 
 
-
+@transaction.atomic
 def create_product(data, user_id):
 
     category_id = data.get("category_id")
@@ -2089,7 +2089,7 @@ def create_product(data, user_id):
                         %s,
                         %s,
                         %s,
-                        TRUE,
+                        %s,
                         %s,
                         %s,
                         NOW(),
@@ -2105,6 +2105,7 @@ def create_product(data, user_id):
                         variant["selling_price"],
                         variant.get("cost_price"),
                         variant["is_default"],
+                        variant["is_active"],
                         user_id,
                         user_id
                     ]
@@ -2135,7 +2136,7 @@ def create_product(data, user_id):
                             %s,
                             %s,
                             %s,
-                            TRUE,
+                            %s,
                             %s,
                             %s,
                             NOW(),
@@ -2147,6 +2148,7 @@ def create_product(data, user_id):
                                 variant_id,
                                 size["size"],
                                 size["stock_quantity"],
+                                size["is_active"],
                                 user_id,
                                 user_id
                             )
@@ -2168,3 +2170,1247 @@ def create_product(data, user_id):
         "message": "Product created successfully.",
         "data": product_data.get("data")
     }, status.HTTP_201_CREATED
+
+
+# def create_product(data, user_id):
+
+#     category_id = data.get("category_id")
+#     sub_category_id = data.get("sub_category_id")
+
+#     name = data.get("name").strip()
+#     description = data.get("description")
+#     fabric = data.get("fabric")
+#     gsm = data.get("gsm")
+
+#     is_featured = data.get("is_featured", False)
+#     is_new_arrival = data.get("is_new_arrival", False)
+#     is_active = data.get("is_active", True)
+
+#     key_highlights = json.dumps(
+#         data.get("key_highlights", {})
+#     )
+
+#     tags = data.get("tags", [])
+#     variants = data.get("variants", [])
+
+#     with connection.cursor() as cursor:
+
+#         try:
+
+#             # --------------------------------------------------
+#             # Product Name Validation
+#             # --------------------------------------------------
+
+#             cursor.execute(
+#                 """
+#                 SELECT 1
+#                 FROM products
+#                 WHERE LOWER(name)=LOWER(%s)
+#                 AND is_deleted=FALSE
+#                 """,
+#                 [name]
+#             )
+
+#             if cursor.fetchone():
+#                 return {
+#                     "message": "Product already exists.",
+#                     "data": {}
+#                 }, status.HTTP_400_BAD_REQUEST
+
+#             # --------------------------------------------------
+#             # Category Validation
+#             # --------------------------------------------------
+
+#             cursor.execute(
+#                 """
+#                 SELECT 1
+#                 FROM categories
+#                 WHERE id=%s
+#                 AND is_deleted=FALSE
+#                 AND is_active=TRUE
+#                 """,
+#                 [category_id]
+#             )
+
+#             if not cursor.fetchone():
+#                 return {
+#                     "message": "Category not found.",
+#                     "data": {}
+#                 }, status.HTTP_404_NOT_FOUND
+
+#             # --------------------------------------------------
+#             # Sub Category Validation
+#             # --------------------------------------------------
+
+#             if sub_category_id:
+
+#                 cursor.execute(
+#                     """
+#                     SELECT 1
+#                     FROM sub_categories
+#                     WHERE id=%s
+#                     AND category_id=%s
+#                     AND is_deleted=FALSE
+#                     AND is_active=TRUE
+#                     """,
+#                     [
+#                         sub_category_id,
+#                         category_id
+#                     ]
+#                 )
+
+#                 if not cursor.fetchone():
+#                     return {
+#                         "message": "Sub category not found.",
+#                         "data": {}
+#                     }, status.HTTP_404_NOT_FOUND
+
+#             # --------------------------------------------------
+#             # Tag Validation
+#             # --------------------------------------------------
+
+#             if tags:
+
+#                 cursor.execute(
+#                     """
+#                     SELECT id
+#                     FROM product_tags
+#                     WHERE id = ANY(%s)
+#                     AND is_deleted = FALSE
+#                     AND is_active = TRUE
+#                     """,
+#                     [tags]
+#                 )
+
+#                 existing_tags = {
+#                     row[0]
+#                     for row in cursor.fetchall()
+#                 }
+
+#                 invalid_tags = [
+#                     tag
+#                     for tag in tags
+#                     if tag not in existing_tags
+#                 ]
+
+#                 if invalid_tags:
+#                     return {
+#                         "message": "Invalid tag ids.",
+#                         "data": {
+#                             "invalid_tag_ids": invalid_tags
+#                         }
+#                     }, status.HTTP_400_BAD_REQUEST
+
+#             # --------------------------------------------------
+#             # SKU Validation
+#             # --------------------------------------------------
+
+#             sku_list = [
+#                 variant["sku"]
+#                 for variant in variants
+#             ]
+
+#             if sku_list:
+
+#                 cursor.execute(
+#                     """
+#                     SELECT sku
+#                     FROM product_variants
+#                     WHERE sku = ANY(%s)
+#                     AND is_deleted = FALSE
+#                     """,
+#                     [sku_list]
+#                 )
+
+#                 existing_skus = [
+#                     row[0]
+#                     for row in cursor.fetchall()
+#                 ]
+
+#                 if existing_skus:
+#                     return {
+#                         "message": "SKU already exists.",
+#                         "data": {
+#                             "existing_skus": existing_skus
+#                         }
+#                     }, status.HTTP_400_BAD_REQUEST
+
+#             # --------------------------------------------------
+#             # Insert Product
+#             # --------------------------------------------------
+
+#             cursor.execute(
+#                 """
+#                 INSERT INTO products
+#                 (
+#                     category_id,
+#                     sub_category_id,
+#                     name,
+#                     description,
+#                     fabric,
+#                     gsm,
+#                     is_featured,
+#                     is_new_arrival,
+#                     key_highlights,
+#                     is_active,
+#                     created_by,
+#                     updated_by,
+#                     created_at,
+#                     updated_at
+#                 )
+#                 VALUES
+#                 (
+#                     %s,
+#                     %s,
+#                     %s,
+#                     %s,
+#                     %s,
+#                     %s,
+#                     %s,
+#                     %s,
+#                     %s,
+#                     %s,
+#                     %s,
+#                     %s,
+#                     NOW(),
+#                     NOW()
+#                 )
+#                 RETURNING id
+#                 """,
+#                 [
+#                     category_id,
+#                     sub_category_id,
+#                     name,
+#                     description,
+#                     fabric,
+#                     gsm,
+#                     is_featured,
+#                     is_new_arrival,
+#                     key_highlights,
+#                     is_active,
+#                     user_id,
+#                     user_id
+#                 ]
+#             )
+
+#             product_id = cursor.fetchone()[0]
+
+#                         # --------------------------------------------------
+#             # Insert Product Tags
+#             # --------------------------------------------------
+
+#             if tags:
+
+#                 cursor.executemany(
+#                     """
+#                     INSERT INTO product_tag_mapping
+#                     (
+#                         product_id,
+#                         tag_id,
+#                         created_by,
+#                         updated_by,
+#                         created_at,
+#                         updated_at
+#                     )
+#                     VALUES
+#                     (
+#                         %s,
+#                         %s,
+#                         %s,
+#                         %s,
+#                         NOW(),
+#                         NOW()
+#                     )
+#                     """,
+#                     [
+#                         (
+#                             product_id,
+#                             tag_id,
+#                             user_id,
+#                             user_id
+#                         )
+#                         for tag_id in tags
+#                     ]
+#                 )
+            
+#                         # --------------------------------------------------
+#             # Insert Product Variants
+#             # --------------------------------------------------
+
+#             for variant in variants:
+
+#                 cursor.execute(
+#                     """
+#                     INSERT INTO product_variants
+#                     (
+#                         product_id,
+#                         sku,
+#                         color,
+#                         mrp,
+#                         selling_price,
+#                         cost_price,
+#                         is_default,
+#                         is_active,
+#                         created_by,
+#                         updated_by,
+#                         created_at,
+#                         updated_at
+#                     )
+#                     VALUES
+#                     (
+#                         %s,
+#                         %s,
+#                         %s,
+#                         %s,
+#                         %s,
+#                         %s,
+#                         %s,
+#                         %s,
+#                         %s,
+#                         %s,
+#                         NOW(),
+#                         NOW()
+#                     )
+#                     RETURNING id
+#                     """,
+#                     [
+#                         product_id,
+#                         variant["sku"],
+#                         variant["color"],
+#                         variant["mrp"],
+#                         variant["selling_price"],
+#                         variant.get("cost_price"),
+#                         variant["is_default"],
+#                         variant["is_active"],
+#                         user_id,
+#                         user_id
+#                     ]
+#                 )
+
+#                 variant_id = cursor.fetchone()[0]
+
+
+#                 sizes = variant.get("sizes", [])
+
+#                 if sizes:
+
+#                     cursor.executemany(
+#                         """
+#                         INSERT INTO product_variant_sizes
+#                         (
+#                             variant_id,
+#                             size,
+#                             stock_quantity,
+#                             is_active,
+#                             created_by,
+#                             updated_by,
+#                             created_at,
+#                             updated_at
+#                         )
+#                         VALUES
+#                         (
+#                             %s,
+#                             %s,
+#                             %s,
+#                             %s,
+#                             %s,
+#                             %s,
+#                             NOW(),
+#                             NOW()
+#                         )
+#                         """,
+#                         [
+#                             (
+#                                 variant_id,
+#                                 size["size"],
+#                                 size["stock_quantity"],
+#                                 size["is_active"],
+#                                 user_id,
+#                                 user_id
+#                             )
+#                             for size in sizes
+#                         ]
+#                     )
+
+#             connection.commit()
+
+#         except Exception:
+#             connection.rollback()
+#             raise
+
+#     product_data, _ = get_product_detail(
+#         product_id=product_id
+#     )
+
+#     return {
+#         "message": "Product created successfully.",
+#         "data": product_data.get("data")
+#     }, status.HTTP_201_CREATED
+
+
+def update_product(data, user_id):
+
+    product_id = data.get("id")
+
+    category_id = data.get("category_id")
+    sub_category_id = data.get("sub_category_id")
+
+    name = data.get("name").strip()
+    description = data.get("description")
+    fabric = data.get("fabric")
+    gsm = data.get("gsm")
+
+    is_featured = data.get("is_featured", False)
+    is_new_arrival = data.get("is_new_arrival", False)
+    is_active = data.get("is_active", True)
+
+    key_highlights = json.dumps(
+        data.get("key_highlights", {})
+    )
+
+    tags = data.get("tags", [])
+    variants = data.get("variants", [])
+
+    delete_tag_ids = data.get("delete_tag_ids", [])
+    delete_variant_ids = data.get("delete_variant_ids", [])
+    delete_size_ids = data.get("delete_size_ids", [])
+
+    with connection.cursor() as cursor:
+
+        try:
+
+            cursor.execute(
+                """
+                SELECT 1
+                FROM products
+                WHERE id=%s
+                AND is_deleted=FALSE
+                """,
+                [product_id]
+            )
+
+            if not cursor.fetchone():
+                return {
+                    "message": "Product not found.",
+                    "data": {}
+                }, status.HTTP_404_NOT_FOUND
+
+
+            cursor.execute(
+                """
+                SELECT 1
+                FROM products
+                WHERE LOWER(name)=LOWER(%s)
+                AND id<>%s
+                AND is_deleted=FALSE
+                """,
+                [name, product_id]
+            )
+
+            if cursor.fetchone():
+                return {
+                    "message": "Product already exists.",
+                    "data": {}
+                }, status.HTTP_400_BAD_REQUEST
+
+            # --------------------------------------------------
+            # Category Validation
+            # --------------------------------------------------
+
+            cursor.execute(
+                """
+                SELECT 1
+                FROM categories
+                WHERE id=%s
+                AND is_deleted=FALSE
+                AND is_active=TRUE
+                """,
+                [category_id]
+            )
+
+            if not cursor.fetchone():
+                return {
+                    "message": "Category not found.",
+                    "data": {}
+                }, status.HTTP_404_NOT_FOUND
+
+            # --------------------------------------------------
+            # Sub Category Validation
+            # --------------------------------------------------
+
+            if sub_category_id:
+
+                cursor.execute(
+                    """
+                    SELECT 1
+                    FROM sub_categories
+                    WHERE id=%s
+                    AND category_id=%s
+                    AND is_deleted=FALSE
+                    AND is_active=TRUE
+                    """,
+                    [
+                        sub_category_id,
+                        category_id
+                    ]
+                )
+
+                if not cursor.fetchone():
+                    return {
+                        "message": "Sub category not found.",
+                        "data": {}
+                    }, status.HTTP_404_NOT_FOUND
+
+            # --------------------------------------------------
+            # Tag Validation
+            # --------------------------------------------------
+
+            if tags:
+
+                cursor.execute(
+                    """
+                    SELECT id
+                    FROM product_tags
+                    WHERE id = ANY(%s)
+                    AND is_deleted = FALSE
+                    AND is_active = TRUE
+                    """,
+                    [tags]
+                )
+
+                existing_tags = {
+                    row[0]
+                    for row in cursor.fetchall()
+                }
+
+                invalid_tags = [
+                    tag
+                    for tag in tags
+                    if tag not in existing_tags
+                ]
+
+                if invalid_tags:
+                    return {
+                        "message": "Invalid tag ids.",
+                        "data": {
+                            "invalid_tag_ids": invalid_tags
+                        }
+                    }, status.HTTP_400_BAD_REQUEST
+
+            # --------------------------------------------------
+            # Variant Ownership Validation
+            # --------------------------------------------------
+
+            update_variant_ids = [
+                variant["id"]
+                for variant in variants
+                if variant.get("id")
+            ]
+
+            if update_variant_ids:
+
+                cursor.execute(
+                    """
+                    SELECT id
+                    FROM product_variants
+                    WHERE id = ANY(%s)
+                    AND product_id = %s
+                    AND is_deleted = FALSE
+                    """,
+                    [update_variant_ids, product_id]
+                )
+
+                owned_variant_ids = {
+                    row[0]
+                    for row in cursor.fetchall()
+                }
+
+                invalid_variant_ids = [
+                    variant_id
+                    for variant_id in update_variant_ids
+                    if variant_id not in owned_variant_ids
+                ]
+
+                if invalid_variant_ids:
+                    return {
+                        "message": "Invalid variant ids.",
+                        "data": {
+                            "invalid_variant_ids": invalid_variant_ids
+                        }
+                    }, status.HTTP_400_BAD_REQUEST
+
+            if delete_variant_ids:
+
+                cursor.execute(
+                    """
+                    SELECT id
+                    FROM product_variants
+                    WHERE id = ANY(%s)
+                    AND product_id = %s
+                    AND is_deleted = FALSE
+                    """,
+                    [delete_variant_ids, product_id]
+                )
+
+                owned_delete_variant_ids = {
+                    row[0]
+                    for row in cursor.fetchall()
+                }
+
+                invalid_delete_variant_ids = [
+                    variant_id
+                    for variant_id in delete_variant_ids
+                    if variant_id not in owned_delete_variant_ids
+                ]
+
+                if invalid_delete_variant_ids:
+                    return {
+                        "message": "Invalid delete variant ids.",
+                        "data": {
+                            "invalid_variant_ids": invalid_delete_variant_ids
+                        }
+                    }, status.HTTP_400_BAD_REQUEST
+            
+
+            if delete_size_ids:
+
+                cursor.execute("""
+                    SELECT pvs.id
+                    FROM product_variant_sizes pvs
+                    JOIN product_variants pv
+                        ON pv.id = pvs.variant_id
+                    WHERE pvs.id = ANY(%s)
+                    AND pv.product_id = %s
+                    AND pvs.is_deleted = FALSE
+                    AND pv.is_deleted = FALSE
+                """, [delete_size_ids, product_id])
+
+                existing_size_ids = {
+                    row[0]
+                    for row in cursor.fetchall()
+                }
+
+                invalid_size_ids = [
+                    size_id
+                    for size_id in delete_size_ids
+                    if size_id not in existing_size_ids
+                ]
+
+                if invalid_size_ids:
+                    return {
+                        "message": "Invalid delete size ids.",
+                        "data": {
+                            "invalid_size_ids": invalid_size_ids
+                        }
+                    }, status.HTTP_400_BAD_REQUEST
+            # --------------------------------------------------
+            # SKU Validation
+            # --------------------------------------------------
+
+            if delete_size_ids:
+
+                cursor.execute("""
+                    UPDATE product_variant_sizes
+                    SET
+                        is_deleted = TRUE,
+                        is_active = FALSE,
+                        updated_by = %s,
+                        updated_at = NOW()
+                    WHERE id = ANY(%s)
+                    AND is_deleted = FALSE
+                """, [
+                    user_id,
+                    delete_size_ids
+                ])
+
+
+            sku_list = [
+                variant["sku"]
+                for variant in variants
+            ]
+
+            if sku_list:
+
+                cursor.execute(
+                    """
+                    SELECT sku
+                    FROM product_variants
+                    WHERE sku = ANY(%s)
+                    AND is_deleted = FALSE
+                    AND NOT (
+                        product_id = %s
+                        AND id = ANY(%s)
+                    )
+                    """,
+                    [
+                        sku_list,
+                        product_id,
+                        update_variant_ids or [0]
+                    ]
+                )
+
+                existing_skus = [
+                    row[0]
+                    for row in cursor.fetchall()
+                ]
+
+                if existing_skus:
+                    return {
+                        "message": "SKU already exists.",
+                        "data": {
+                            "existing_skus": existing_skus
+                        }
+                    }, status.HTTP_400_BAD_REQUEST
+
+            # --------------------------------------------------
+            # Update Product
+            # --------------------------------------------------
+
+            cursor.execute(
+                """
+                UPDATE products
+                SET
+                    category_id=%s,
+                    sub_category_id=%s,
+                    name=%s,
+                    description=%s,
+                    fabric=%s,
+                    gsm=%s,
+                    is_featured=%s,
+                    is_new_arrival=%s,
+                    key_highlights=%s,
+                    is_active=%s,
+                    updated_by=%s,
+                    updated_at=NOW()
+                WHERE id=%s
+                AND is_deleted=FALSE
+                """,
+                [
+                    category_id,
+                    sub_category_id,
+                    name,
+                    description,
+                    fabric,
+                    gsm,
+                    is_featured,
+                    is_new_arrival,
+                    key_highlights,
+                    is_active,
+                    user_id,
+                    product_id
+                ]
+            )
+
+            # --------------------------------------------------
+            # Soft Delete Tags
+            # --------------------------------------------------
+
+            if delete_tag_ids:
+
+                cursor.execute(
+                    """
+                    UPDATE product_tag_mapping
+                    SET
+                        is_deleted=TRUE,
+                        is_active=FALSE,
+                        updated_by=%s,
+                        updated_at=NOW()
+                    WHERE product_id=%s
+                    AND tag_id = ANY(%s)
+                    AND is_deleted=FALSE
+                    """,
+                    [
+                        user_id,
+                        product_id,
+                        delete_tag_ids
+                    ]
+                )
+
+            # --------------------------------------------------
+            # Insert Product Tags
+            # --------------------------------------------------
+
+            if tags:
+
+                cursor.execute(
+                    """
+                    SELECT tag_id
+                    FROM product_tag_mapping
+                    WHERE product_id=%s
+                    AND tag_id = ANY(%s)
+                    AND is_deleted=FALSE
+                    """,
+                    [product_id, tags]
+                )
+
+                existing_mapped_tags = {
+                    row[0]
+                    for row in cursor.fetchall()
+                }
+
+                new_tags = [
+                    tag_id
+                    for tag_id in tags
+                    if tag_id not in existing_mapped_tags
+                ]
+
+                if new_tags:
+
+                    cursor.executemany(
+                        """
+                        INSERT INTO product_tag_mapping
+                        (
+                            product_id,
+                            tag_id,
+                            created_by,
+                            updated_by,
+                            created_at,
+                            updated_at
+                        )
+                        VALUES
+                        (
+                            %s,
+                            %s,
+                            %s,
+                            %s,
+                            NOW(),
+                            NOW()
+                        )
+                        """,
+                        [
+                            (
+                                product_id,
+                                tag_id,
+                                user_id,
+                                user_id
+                            )
+                            for tag_id in new_tags
+                        ]
+                    )
+
+            # --------------------------------------------------
+            # Soft Delete Variants
+            # --------------------------------------------------
+
+            if delete_variant_ids:
+
+                cursor.execute(
+                    """
+                    UPDATE product_variants
+                    SET
+                        is_deleted=TRUE,
+                        is_active=FALSE,
+                        is_default=FALSE,
+                        updated_by=%s,
+                        updated_at=NOW()
+                    WHERE product_id=%s
+                    AND id = ANY(%s)
+                    AND is_deleted=FALSE
+                    """,
+                    [
+                        user_id,
+                        product_id,
+                        delete_variant_ids
+                    ]
+                )
+
+                cursor.execute(
+                    """
+                    UPDATE product_variant_sizes
+                    SET
+                        is_deleted=TRUE,
+                        is_active=FALSE,
+                        updated_by=%s,
+                        updated_at=NOW()
+                    WHERE variant_id = ANY(%s)
+                    AND is_deleted=FALSE
+                    """,
+                    [
+                        user_id,
+                        delete_variant_ids
+                    ]
+                )
+
+            # --------------------------------------------------
+            # Reset Default Variants
+            # --------------------------------------------------
+
+            cursor.execute(
+                """
+                UPDATE product_variants
+                SET
+                    is_default=FALSE,
+                    updated_by=%s,
+                    updated_at=NOW()
+                WHERE product_id=%s
+                AND is_deleted=FALSE
+                """,
+                [user_id, product_id]
+            )
+
+            # --------------------------------------------------
+            # Upsert Product Variants
+            # --------------------------------------------------
+
+            for variant in variants:
+
+                variant_id = variant.get("id")
+
+                if variant_id:
+
+                    cursor.execute(
+                        """
+                        UPDATE product_variants
+                        SET
+                            sku=%s,
+                            color=%s,
+                            mrp=%s,
+                            selling_price=%s,
+                            cost_price=%s,
+                            is_default=%s,
+                            is_active=%s,
+                            updated_by=%s,
+                            updated_at=NOW()
+                        WHERE id=%s
+                        AND product_id=%s
+                        AND is_deleted=FALSE
+                        """,
+                        [
+                            variant["sku"],
+                            variant["color"],
+                            variant["mrp"],
+                            variant["selling_price"],
+                            variant.get("cost_price"),
+                            variant["is_default"],
+                            variant.get("is_active", True),
+                            user_id,
+                            variant_id,
+                            product_id
+                        ]
+                    )
+
+                else:
+
+                    cursor.execute(
+                        """
+                        INSERT INTO product_variants
+                        (
+                            product_id,
+                            sku,
+                            color,
+                            mrp,
+                            selling_price,
+                            cost_price,
+                            is_default,
+                            is_active,
+                            created_by,
+                            updated_by,
+                            created_at,
+                            updated_at
+                        )
+                        VALUES
+                        (
+                            %s,
+                            %s,
+                            %s,
+                            %s,
+                            %s,
+                            %s,
+                            %s,
+                            %s,
+                            %s,
+                            %s,
+                            NOW(),
+                            NOW()
+                        )
+                        RETURNING id
+                        """,
+                        [
+                            product_id,
+                            variant["sku"],
+                            variant["color"],
+                            variant["mrp"],
+                            variant["selling_price"],
+                            variant.get("cost_price"),
+                            variant["is_default"],
+                            variant.get("is_active", True),
+                            user_id,
+                            user_id
+                        ]
+                    )
+
+                    variant_id = cursor.fetchone()[0]
+
+                sizes = variant.get("sizes", [])
+
+                update_size_ids = [
+                    size["id"]
+                    for size in sizes
+                    if size.get("id")
+                ]
+
+                if update_size_ids:
+
+                    cursor.execute(
+                        """
+                        SELECT id
+                        FROM product_variant_sizes
+                        WHERE id = ANY(%s)
+                        AND variant_id = %s
+                        AND is_deleted = FALSE
+                        """,
+                        [update_size_ids, variant_id]
+                    )
+
+                    owned_size_ids = {
+                        row[0]
+                        for row in cursor.fetchall()
+                    }
+
+                    invalid_size_ids = [
+                        size_id
+                        for size_id in update_size_ids
+                        if size_id not in owned_size_ids
+                    ]
+
+                    if invalid_size_ids:
+                        connection.rollback()
+                        return {
+                            "message": "Invalid size ids.",
+                            "data": {
+                                "invalid_size_ids": invalid_size_ids
+                            }
+                        }, status.HTTP_400_BAD_REQUEST
+
+                for size in sizes:
+
+                    size_id = size.get("id")
+
+                    if size_id:
+
+                        cursor.execute(
+                            """
+                            UPDATE product_variant_sizes
+                            SET
+                                size=%s,
+                                stock_quantity=%s,
+                                is_active=%s,
+                                updated_by=%s,
+                                updated_at=NOW()
+                            WHERE id=%s
+                            AND variant_id=%s
+                            AND is_deleted=FALSE
+                            """,
+                            [
+                                size["size"],
+                                size["stock_quantity"],
+                                size.get("is_active", True),
+                                user_id,
+                                size_id,
+                                variant_id
+                            ]
+                        )
+
+                    else:
+
+                        cursor.execute(
+                            """
+                            INSERT INTO product_variant_sizes
+                            (
+                                variant_id,
+                                size,
+                                stock_quantity,
+                                is_active,
+                                created_by,
+                                updated_by,
+                                created_at,
+                                updated_at
+                            )
+                            VALUES
+                            (
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                NOW(),
+                                NOW()
+                            )
+                            """,
+                            [
+                                variant_id,
+                                size["size"],
+                                size["stock_quantity"],
+                                size.get("is_active", True),
+                                user_id,
+                                user_id
+                            ]
+                        )
+
+            connection.commit()
+
+        except Exception:
+            connection.rollback()
+            raise
+
+    product_data, _ = get_product_detail(
+        product_id=product_id
+    )
+
+    return {
+        "message": "Product updated successfully.",
+        "data": product_data.get("data")
+    }, status.HTTP_200_OK
+
+
+def delete_product(product_id, user_id):
+
+    if not product_id:
+        return {
+            "message": "Product id is required.",
+            "data": {}
+        }, status.HTTP_400_BAD_REQUEST
+
+    with connection.cursor() as cursor:
+
+        try:
+
+            # --------------------------------------------------
+            # Product Existence Validation
+            # --------------------------------------------------
+
+            cursor.execute(
+                """
+                SELECT 1
+                FROM products
+                WHERE id=%s
+                AND is_deleted=FALSE
+                """,
+                [product_id]
+            )
+
+            if not cursor.fetchone():
+                return {
+                    "message": "Product not found.",
+                    "data": {}
+                }, status.HTTP_404_NOT_FOUND
+
+            # --------------------------------------------------
+            # Soft Delete Product
+            # --------------------------------------------------
+
+            cursor.execute(
+                """
+                UPDATE products
+                SET
+                    is_deleted=TRUE,
+                    is_active=FALSE,
+                    updated_by=%s,
+                    updated_at=NOW()
+                WHERE id=%s
+                AND is_deleted=FALSE
+                """,
+                [user_id, product_id]
+            )
+
+            # --------------------------------------------------
+            # Soft Delete Tag Mappings
+            # --------------------------------------------------
+
+            cursor.execute(
+                """
+                UPDATE product_tag_mapping
+                SET
+                    is_deleted=TRUE,
+                    is_active=FALSE,
+                    updated_by=%s,
+                    updated_at=NOW()
+                WHERE product_id=%s
+                AND is_deleted=FALSE
+                """,
+                [user_id, product_id]
+            )
+
+            # --------------------------------------------------
+            # Soft Delete Variants
+            # --------------------------------------------------
+
+            cursor.execute(
+                """
+                SELECT id
+                FROM product_variants
+                WHERE product_id=%s
+                AND is_deleted=FALSE
+                """,
+                [product_id]
+            )
+
+            variant_ids = [
+                row[0]
+                for row in cursor.fetchall()
+            ]
+
+            if variant_ids:
+
+                cursor.execute(
+                    """
+                    UPDATE product_variants
+                    SET
+                        is_deleted=TRUE,
+                        is_active=FALSE,
+                        is_default=FALSE,
+                        updated_by=%s,
+                        updated_at=NOW()
+                    WHERE product_id=%s
+                    AND is_deleted=FALSE
+                    """,
+                    [user_id, product_id]
+                )
+
+                # --------------------------------------------------
+                # Soft Delete Variant Sizes
+                # --------------------------------------------------
+
+                cursor.execute(
+                    """
+                    UPDATE product_variant_sizes
+                    SET
+                        is_deleted=TRUE,
+                        is_active=FALSE,
+                        updated_by=%s,
+                        updated_at=NOW()
+                    WHERE variant_id = ANY(%s)
+                    AND is_deleted=FALSE
+                    """,
+                    [user_id, variant_ids]
+                )
+
+                # --------------------------------------------------
+                # Soft Delete Variant Images
+                # --------------------------------------------------
+
+                cursor.execute(
+                    """
+                    UPDATE product_variant_images
+                    SET
+                        is_deleted=TRUE,
+                        is_active=FALSE,
+                        updated_by=%s,
+                        updated_at=NOW()
+                    WHERE variant_id = ANY(%s)
+                    AND is_deleted=FALSE
+                    """,
+                    [user_id, variant_ids]
+                )
+
+            connection.commit()
+
+        except Exception:
+            connection.rollback()
+            raise
+
+    return {
+        "message": "Product deleted successfully.",
+        "data": {}
+    }, status.HTTP_200_OK
