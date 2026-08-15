@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/5.0/ref/settings/
 """
 
 import os
+
 import dj_database_url
 from pathlib import Path
 from decouple import Csv, config
@@ -161,12 +162,13 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 CORS_ALLOW_CREDENTIALS = True
 
 CORS_ALLOWED_ORIGINS = [
-    "http://127.0.0.1:5800",
-    "http://localhost:5500",
-    "http://localhost:5173",
-    "https://panchvastra-red.vercel.app",
-    "http://192.168.1.11:8001",
-    "https://7d70-2401-4900-1ca3-d17b-7888-b958-f7f0-696e.ngrok-free.app"
+    # "http://127.0.0.1:5800",
+    # "http://localhost:5500",
+    # "http://localhost:5173",
+    # "https://panchvastra-red.vercel.app",
+    # "http://192.168.1.11:8001",
+    # "https://7d70-2401-4900-1ca3-d17b-7888-b958-f7f0-696e.ngrok-free.app",
+    "https://panchvastra.com"
 ]
 
 CORS_ALLOW_METHODS = [
@@ -248,3 +250,18 @@ BREVO_API_KEY = os.getenv("BREVO_API_KEY")
 IMAGEKIT_PUBLIC_KEY = os.getenv("IMAGEKIT_PUBLIC_KEY")
 IMAGEKIT_PRIVATE_KEY = os.getenv("IMAGEKIT_PRIVATE_KEY")
 IMAGEKIT_URL_ENDPOINT = os.getenv("IMAGEKIT_URL_ENDPOINT")
+
+
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+SECURE_SSL_REDIRECT = True
+
+SESSION_COOKIE_SECURE = True
+
+CSRF_COOKIE_SECURE = True
+
+
+CSRF_TRUSTED_ORIGINS = [
+    "https://api.panchvastra.com",
+    "https://panchvastra.com",
+]
