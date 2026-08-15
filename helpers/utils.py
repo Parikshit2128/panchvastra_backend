@@ -8,6 +8,7 @@ import traceback
 import uuid
 from imagekitio import ImageKit
 import jwt
+import os
 import requests
 from panchvastra.settings import BREVO_API_KEY, IMAGEKIT_PRIVATE_KEY, IMAGEKIT_PUBLIC_KEY, IMAGEKIT_URL_ENDPOINT, SECRET_KEY
 from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
@@ -18,11 +19,14 @@ from rest_framework.exceptions import ValidationError, APIException
 from django.http import Http404
 
 import smtplib
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 from panchvastra.settings import EMAIL_HOST, EMAIL_HOST_PASSWORD, EMAIL_HOST_USER, EMAIL_PORT
 from django.http import JsonResponse
 from imagekitio.models.UploadFileRequestOptions import UploadFileRequestOptions
+
+
 
 
 def db_query_result_to_json(query_result, column_names):
@@ -163,68 +167,130 @@ def _store_otp(cursor, user_id, otp, expires_at):
     cursor.execute("""
         INSERT INTO user_otps (user_id, otp, expires_at)
         VALUES (%s, %s, %s)
+        ON CONFLICT (user_id)
+        DO UPDATE SET
+            otp = EXCLUDED.otp,
+            expires_at = EXCLUDED.expires_at,
+            created_at = NOW()
     """, [user_id, otp, expires_at])
 
 
 
+# def send_verification_otp(email, otp):
+#     try:
+#         url = "https://api.brevo.com/v3/smtp/email"
+
+#         headers = {
+#             "accept": "application/json",
+#             "api-key": BREVO_API_KEY,
+#             "content-type": "application/json"
+#         }
+
+#         payload = {
+#             "sender": {
+#                 "name": "Panchvastra",
+#                 "email": "panchvastra9@gmail.com"
+#             },
+#             "to": [
+#                 {
+#                     "email": email
+#                 }
+#             ],
+#             "subject": "Email Verification OTP",
+#             "htmlContent": f"""
+#                 <html>
+#                     <body style="font-family: Arial, sans-serif;">
+#                         <h2>Panchvastra</h2>
+#                         <p>Your OTP for email verification is:</p>
+
+#                         <div style="
+#                             font-size:32px;
+#                             font-weight:bold;
+#                             letter-spacing:6px;
+#                             color:#0d6efd;
+#                             margin:20px 0;">
+#                             {otp}
+#                         </div>
+
+#                         <p>This OTP is valid for <b>10 minutes</b>.</p>
+
+#                         <hr>
+
+#                         <small>
+#                             If you didn't request this OTP, you can safely ignore this email.
+#                         </small>
+#                     </body>
+#                 </html>
+#             """
+#         }
+
+#         response = requests.post(
+#             url,
+#             headers=headers,
+#             json=payload,
+#             timeout=20
+#         )
+
+#         if response.status_code not in (200, 201):
+#             raise Exception(
+#                 f"Brevo API Error {response.status_code}: {response.text}"
+#             )
+
+#         print("OTP email sent successfully.")
+
+#     except Exception:
+#         traceback.print_exc()
+#         raise
+
+
 def send_verification_otp(email, otp):
     try:
-        url = "https://api.brevo.com/v3/smtp/email"
+        smtp_server = os.getenv("EMAIL_HOST")
+        smtp_port = int(os.getenv("EMAIL_PORT"))
+        smtp_email = os.getenv("EMAIL_HOST_USER")
+        smtp_password = os.getenv("EMAIL_HOST_PASSWORD")
 
-        headers = {
-            "accept": "application/json",
-            "api-key": BREVO_API_KEY,
-            "content-type": "application/json"
-        }
+        message = MIMEMultipart("alternative")
+        message["Subject"] = "Email Verification OTP"
+        message["From"] = f"Panchvastra <{smtp_email}>"
+        message["To"] = email
 
-        payload = {
-            "sender": {
-                "name": "Panchvastra",
-                "email": "panchvastra9@gmail.com"
-            },
-            "to": [
-                {
-                    "email": email
-                }
-            ],
-            "subject": "Email Verification OTP",
-            "htmlContent": f"""
-                <html>
-                    <body style="font-family: Arial, sans-serif;">
-                        <h2>Panchvastra</h2>
-                        <p>Your OTP for email verification is:</p>
+        html = f"""
+        <html>
+            <body style="font-family: Arial, sans-serif;">
+                <h2>Panchvastra</h2>
 
-                        <div style="
-                            font-size:32px;
-                            font-weight:bold;
-                            letter-spacing:6px;
-                            color:#0d6efd;
-                            margin:20px 0;">
-                            {otp}
-                        </div>
+                <p>Your OTP for email verification is:</p>
 
-                        <p>This OTP is valid for <b>10 minutes</b>.</p>
+                <div style="
+                    font-size:32px;
+                    font-weight:bold;
+                    letter-spacing:6px;
+                    color:#0d6efd;
+                    margin:20px 0;">
+                    {otp}
+                </div>
 
-                        <hr>
+                <p>This OTP is valid for <b>10 minutes</b>.</p>
 
-                        <small>
-                            If you didn't request this OTP, you can safely ignore this email.
-                        </small>
-                    </body>
-                </html>
-            """
-        }
+                <hr>
 
-        response = requests.post(
-            url,
-            headers=headers,
-            json=payload,
-            timeout=20
-        )
+                <small>
+                    If you didn't request this OTP, you can safely ignore this email.
+                </small>
+            </body>
+        </html>
+        """
 
-        if response.status_code not in (200, 201):
-            raise Exception(
-                f"Brevo API Error {response.status_code}: {response.text}"
+        message.attach(MIMEText(html, "html"))
+
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_email, smtp_password)
+            server.sendmail(
+                smtp_email,
+                email,
+                message.as_string()
             )
 
         print("OTP email sent successfully.")
@@ -232,7 +298,6 @@ def send_verification_otp(email, otp):
     except Exception:
         traceback.print_exc()
         raise
-
 
 
 def decode_jwt_token(token):
@@ -295,15 +360,15 @@ def delete_image_from_imagekit(file_id):
     imagekit.delete_file(file_id)
 
 
-def replace_image(
-    old_file_id,
-    new_image,
-    folder
-):
+# def replace_image(
+#     old_file_id,
+#     new_image,
+#     folder
+# ):
 
-    delete_image(old_file_id)
+#     delete_image(old_file_id)
 
-    return upload_image(
-        new_image,
-        folder
-    )
+#     return upload_image(
+#         new_image,
+#         folder
+#     )
