@@ -61,8 +61,6 @@ MIDDLEWARE = [
 
     'django.middleware.security.SecurityMiddleware',
 
-    "corsheaders.middleware.CorsMiddleware",
-
     'whitenoise.middleware.WhiteNoiseMiddleware',
 
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -168,7 +166,8 @@ CORS_ALLOWED_ORIGINS = [
     # "https://panchvastra-red.vercel.app",
     # "http://192.168.1.11:8001",
     # "https://7d70-2401-4900-1ca3-d17b-7888-b958-f7f0-696e.ngrok-free.app",
-    "https://panchvastra.com"
+    "https://panchvastra.com",
+    "https://www.panchvastra.com"
 ]
 
 CORS_ALLOW_METHODS = [
