@@ -192,6 +192,35 @@ class CreateProductSerializer(serializers.Serializer):
     
 
 
+class CreateAddressSerializer(serializers.Serializer):
+    full_name = serializers.CharField(max_length=255)
+    mobile = serializers.CharField(max_length=20)
+    address_line_1 = serializers.CharField(max_length=500)
+    address_line_2 = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    landmark = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    city = serializers.CharField(max_length=100)
+    state = serializers.CharField(max_length=100)
+    country = serializers.CharField(max_length=100, required=False, default="India")
+    pincode = serializers.CharField(max_length=10)
+    address_type = serializers.ChoiceField(choices=["Home", "Work", "Other"], required=False, default="Home")
+    is_default = serializers.BooleanField(required=False, default=False)
+
+
+class UpdateAddressSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    full_name = serializers.CharField(max_length=255, required=False)
+    mobile = serializers.CharField(max_length=20, required=False)
+    address_line_1 = serializers.CharField(max_length=500, required=False)
+    address_line_2 = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    landmark = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    city = serializers.CharField(max_length=100, required=False)
+    state = serializers.CharField(max_length=100, required=False)
+    country = serializers.CharField(max_length=100, required=False)
+    pincode = serializers.CharField(max_length=10, required=False)
+    address_type = serializers.ChoiceField(choices=["Home", "Work", "Other"], required=False)
+    is_default = serializers.BooleanField(required=False)
+
+
 class UpdateProductSerializer(CreateProductSerializer):
 
     id = serializers.IntegerField()

@@ -171,9 +171,10 @@ def razorpay_webhook_handler(request):
     with connection.cursor() as cursor:
 
         cursor.execute("""
-            SELECT id, order_id
-            FROM public.payments
-            WHERE razorpay_order_id=%s
+            SELECT p.id, p.order_id, o.user_id, o.grand_total, o.payment_status
+            FROM public.payments p
+            JOIN public.orders o ON o.id = p.order_id
+            WHERE p.razorpay_order_id=%s
         """, [razorpay_order_id])
 
         row = cursor.fetchone()
@@ -184,7 +185,9 @@ def razorpay_webhook_handler(request):
                 status=200
             )
 
-        payment_id, order_id = row
+        payment_id, order_id, user_id, grand_total, existing_payment_status = row
+
+        new_payment_status = "SUCCESS" if status_value == "captured" else "FAILED"
 
         cursor.execute("""
             UPDATE public.payments
@@ -196,7 +199,7 @@ def razorpay_webhook_handler(request):
             WHERE id=%s
         """, [
             razorpay_payment_id,
-            "SUCCESS" if status_value == "captured" else "FAILED",
+            new_payment_status,
             json.dumps(data),
             payment_id
         ])
@@ -206,9 +209,21 @@ def razorpay_webhook_handler(request):
             SET payment_status=%s
             WHERE id=%s
         """, [
-            "SUCCESS" if status_value == "captured" else "FAILED",
+            new_payment_status,
             order_id
         ])
+
+        # Update user order stats only on the transition into SUCCESS,
+        # so repeated webhook deliveries don't double-count.
+        if new_payment_status == "SUCCESS" and existing_payment_status != "SUCCESS":
+            cursor.execute("""
+                UPDATE public.users
+                SET
+                    total_orders = COALESCE(total_orders, 0) + 1,
+                    total_spent = COALESCE(total_spent, 0) + %s,
+                    last_order_at = NOW()
+                WHERE id=%s
+            """, [grand_total, user_id])
 
     return Response(
         {"message": "Webhook processed"},

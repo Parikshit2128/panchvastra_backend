@@ -1819,8 +1819,6 @@ def create_product(data, user_id):
 
     with connection.cursor() as cursor:
 
-        try:
-
             # --------------------------------------------------
             # Product Name Validation
             # --------------------------------------------------
@@ -2155,12 +2153,6 @@ def create_product(data, user_id):
                             for size in sizes
                         ]
                     )
-
-            connection.commit()
-
-        except Exception:
-            connection.rollback()
-            raise
 
     product_data, _ = get_product_detail(
         product_id=product_id
@@ -3412,5 +3404,346 @@ def delete_product(product_id, user_id):
 
     return {
         "message": "Product deleted successfully.",
+        "data": {}
+    }, status.HTTP_200_OK
+
+
+
+ADDRESS_COLUMNS = [
+    "id",
+    "user_id",
+    "full_name",
+    "mobile",
+    "address_line_1",
+    "address_line_2",
+    "landmark",
+    "city",
+    "state",
+    "country",
+    "pincode",
+    "address_type",
+    "is_default",
+    "created_at",
+    "updated_at"
+]
+
+
+def create_address(data, user_id):
+
+    with connection.cursor() as cursor:
+
+        cursor.execute(
+            """
+            SELECT COUNT(*)
+            FROM addresses
+            WHERE user_id = %s
+            AND is_deleted = FALSE
+            """,
+            [user_id]
+        )
+
+        is_first_address = cursor.fetchone()[0] == 0
+
+        is_default = is_first_address or data.get("is_default", False)
+
+        if is_default:
+            cursor.execute(
+                """
+                UPDATE addresses
+                SET is_default = FALSE
+                WHERE user_id = %s
+                AND is_deleted = FALSE
+                AND is_default = TRUE
+                """,
+                [user_id]
+            )
+
+        cursor.execute(
+            """
+            INSERT INTO addresses
+            (
+                user_id,
+                full_name,
+                mobile,
+                address_line_1,
+                address_line_2,
+                landmark,
+                city,
+                state,
+                country,
+                pincode,
+                address_type,
+                is_default,
+                created_by,
+                updated_by,
+                created_at,
+                updated_at
+            )
+            VALUES
+            (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW()
+            )
+            RETURNING id
+            """,
+            [
+                user_id,
+                data.get("full_name"),
+                data.get("mobile"),
+                data.get("address_line_1"),
+                data.get("address_line_2"),
+                data.get("landmark"),
+                data.get("city"),
+                data.get("state"),
+                data.get("country", "India"),
+                data.get("pincode"),
+                data.get("address_type", "Home"),
+                is_default,
+                user_id,
+                user_id
+            ]
+        )
+
+        address_id = cursor.fetchone()[0]
+
+        connection.commit()
+
+    address_data, _ = get_addresses(
+        user_id=user_id,
+        address_id=address_id
+    )
+
+    return {
+        "message": "Address created successfully.",
+        "data": address_data.get("data")
+    }, status.HTTP_201_CREATED
+
+
+
+def get_addresses(user_id, address_id=None):
+
+    columns_str = ", ".join(ADDRESS_COLUMNS)
+
+    params = [user_id]
+
+    where_clause = """
+        WHERE user_id = %s
+        AND is_deleted = FALSE
+    """
+
+    if address_id:
+        where_clause += " AND id = %s"
+        params.append(address_id)
+
+    sql = f"""
+        SELECT {columns_str}
+        FROM addresses
+        {where_clause}
+        ORDER BY is_default DESC, created_at DESC
+    """
+
+    with connection.cursor() as cursor:
+
+        cursor.execute(sql, params)
+
+        rows = cursor.fetchall()
+
+        if not rows:
+            return {
+                "message": "Address not found." if address_id else "Data not found.",
+                "data": [] if not address_id else {}
+            }, (
+                status.HTTP_404_NOT_FOUND
+                if address_id
+                else status.HTTP_200_OK
+            )
+
+        result = db_query_result_to_json(rows, ADDRESS_COLUMNS)
+
+        if address_id:
+            return {
+                "message": "Data fetched successfully.",
+                "data": result[0]
+            }, status.HTTP_200_OK
+
+        return {
+            "message": "Data fetched successfully.",
+            "data": result
+        }, status.HTTP_200_OK
+
+
+
+def update_address(data, user_id):
+
+    address_id = data.get("id")
+
+    updatable_fields = [
+        "full_name",
+        "mobile",
+        "address_line_1",
+        "address_line_2",
+        "landmark",
+        "city",
+        "state",
+        "country",
+        "pincode",
+        "address_type"
+    ]
+
+    with connection.cursor() as cursor:
+
+        cursor.execute(
+            """
+            SELECT id
+            FROM addresses
+            WHERE id = %s
+            AND user_id = %s
+            AND is_deleted = FALSE
+            """,
+            [address_id, user_id]
+        )
+
+        if not cursor.fetchone():
+            return {
+                "message": "Address not found.",
+                "data": {}
+            }, status.HTTP_404_NOT_FOUND
+
+    set_parts = []
+    values = []
+
+    for field in updatable_fields:
+        if field in data:
+            set_parts.append(f"{field} = %s")
+            values.append(data[field])
+
+    if "is_default" in data:
+
+        if data["is_default"]:
+
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE addresses
+                    SET is_default = FALSE
+                    WHERE user_id = %s
+                    AND is_deleted = FALSE
+                    AND is_default = TRUE
+                    AND id <> %s
+                    """,
+                    [user_id, address_id]
+                )
+
+            set_parts.append("is_default = %s")
+            values.append(True)
+
+        else:
+            set_parts.append("is_default = %s")
+            values.append(False)
+
+    if not set_parts:
+        return {
+            "message": "No fields to update.",
+            "data": {}
+        }, status.HTTP_400_BAD_REQUEST
+
+    set_parts.append("updated_by = %s")
+    values.append(user_id)
+
+    set_parts.append("updated_at = NOW()")
+
+    values.append(address_id)
+    values.append(user_id)
+
+    sql = f"""
+        UPDATE addresses
+        SET {', '.join(set_parts)}
+        WHERE id = %s
+        AND user_id = %s
+        AND is_deleted = FALSE
+    """
+
+    with connection.cursor() as cursor:
+        cursor.execute(sql, values)
+        connection.commit()
+
+    address_data, _ = get_addresses(
+        user_id=user_id,
+        address_id=address_id
+    )
+
+    return {
+        "message": "Address updated successfully.",
+        "data": address_data.get("data")
+    }, status.HTTP_200_OK
+
+
+
+def delete_address(address_id, user_id):
+
+    if not address_id:
+        return {
+            "message": "id is required.",
+            "data": {}
+        }, status.HTTP_400_BAD_REQUEST
+
+    with connection.cursor() as cursor:
+
+        cursor.execute(
+            """
+            SELECT is_default
+            FROM addresses
+            WHERE id = %s
+            AND user_id = %s
+            AND is_deleted = FALSE
+            """,
+            [address_id, user_id]
+        )
+
+        row = cursor.fetchone()
+
+        if not row:
+            return {
+                "message": "Address not found.",
+                "data": {}
+            }, status.HTTP_404_NOT_FOUND
+
+        was_default = row[0]
+
+        cursor.execute(
+            """
+            UPDATE addresses
+            SET
+                is_deleted = TRUE,
+                is_default = FALSE,
+                updated_by = %s,
+                updated_at = NOW()
+            WHERE id = %s
+            AND user_id = %s
+            """,
+            [user_id, address_id, user_id]
+        )
+
+        if was_default:
+
+            cursor.execute(
+                """
+                UPDATE addresses
+                SET is_default = TRUE
+                WHERE id = (
+                    SELECT id
+                    FROM addresses
+                    WHERE user_id = %s
+                    AND is_deleted = FALSE
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                )
+                """,
+                [user_id]
+            )
+
+        connection.commit()
+
+    return {
+        "message": "Address deleted successfully.",
         "data": {}
     }, status.HTTP_200_OK

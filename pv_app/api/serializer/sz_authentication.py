@@ -20,3 +20,12 @@ class VerifyEmailSerializer(serializers.Serializer):
     otp = serializers.CharField(max_length=6)
     # user_type = serializers.ChoiceField(choices=['user', 'admin'], default='user')
 
+
+class UpdateUserProfileSerializer(serializers.Serializer):
+    first_name = serializers.CharField(max_length=100, required=False)
+    last_name = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    mobile = serializers.CharField(max_length=20, required=False)
+    date_of_birth = serializers.DateField(required=False, allow_null=True)
+    gender = serializers.ChoiceField(choices=["Male", "Female", "Other"], required=False, allow_null=True)
+    profile_image = serializers.ImageField(required=False)
+

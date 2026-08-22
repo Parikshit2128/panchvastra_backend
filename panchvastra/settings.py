@@ -167,8 +167,14 @@ CORS_ALLOWED_ORIGINS = [
     # "http://192.168.1.11:8001",
     # "https://7d70-2401-4900-1ca3-d17b-7888-b958-f7f0-696e.ngrok-free.app",
     "https://panchvastra.com",
+    "https://advisors-montreal-dsl-era.trycloudflare.com",
     "https://www.panchvastra.com"
 ]
+
+# # Local test pages (e.g. payments/test_payment.html opened as file://) send
+# # Origin: null, which CORS_ALLOWED_ORIGINS can't match. Only relax this in DEBUG.
+# if DEBUG:
+#     CORS_ALLOW_ALL_ORIGINS = True
 
 CORS_ALLOW_METHODS = [
     "GET",
@@ -254,6 +260,7 @@ IMAGEKIT_URL_ENDPOINT = os.getenv("IMAGEKIT_URL_ENDPOINT")
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 SECURE_SSL_REDIRECT = True
+# SECURE_SSL_REDIRECT = False
 
 SESSION_COOKIE_SECURE = True
 

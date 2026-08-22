@@ -5,7 +5,7 @@ from drf_spectacular.utils import (
     OpenApiTypes
 )
 
-from pv_app.api.serializer.sz_user_panel import AddToCartSerializer, CouponSerializer, CreateCategorySerializer, CreateProductSerializer, UpdateCartSerializer, UpdateCategorySerializer, UpdateCouponSerializer, UpdateProductSerializer
+from pv_app.api.serializer.sz_user_panel import AddToCartSerializer, CouponSerializer, CreateAddressSerializer, CreateCategorySerializer, CreateProductSerializer, UpdateAddressSerializer, UpdateCartSerializer, UpdateCategorySerializer, UpdateCouponSerializer, UpdateProductSerializer
 
 
 categories_management_schema = extend_schema_view(
@@ -301,6 +301,56 @@ coupon_management_schema = extend_schema_view(
                 location=OpenApiParameter.QUERY,
                 required=True,
                 description="Unique ID of the coupon to delete."
+            ),
+        ],
+    ),
+)
+
+
+
+
+address_management_schema = extend_schema_view(
+
+    post=extend_schema(
+        tags=["Address Management"],
+        summary="Create address",
+        description="Adds a new address to the authenticated user's address book. The first address created is automatically set as default.",
+        request=CreateAddressSerializer,
+    ),
+
+    get=extend_schema(
+        tags=["Address Management"],
+        summary="Retrieve addresses",
+        description="Returns all saved addresses for the authenticated user, or fetches a specific address by id.",
+        parameters=[
+            OpenApiParameter(
+                name="id",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description="Unique ID of the address to fetch."
+            ),
+        ],
+    ),
+
+    put=extend_schema(
+        tags=["Address Management"],
+        summary="Update address",
+        description="Updates an existing address belonging to the authenticated user. Setting is_default to true unsets any other default address.",
+        request=UpdateAddressSerializer,
+    ),
+
+    delete=extend_schema(
+        tags=["Address Management"],
+        summary="Delete address",
+        description="Soft deletes an address. If the deleted address was the default, the most recently created remaining address becomes the new default.",
+        parameters=[
+            OpenApiParameter(
+                name="id",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description="Unique ID of the address to delete."
             ),
         ],
     ),

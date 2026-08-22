@@ -1,11 +1,68 @@
 from django.db import connection
 from datetime import datetime, timedelta
-from helpers.utils import _store_otp, generate_otp_with_expiry, send_verification_otp
+from helpers.utils import _store_otp, generate_otp_with_expiry, send_verification_otp, upload_image_to_imagekit
 import jwt
 from datetime import datetime, timedelta, timezone
 
 from panchvastra.settings import SECRET_KEY
 from django.contrib.auth.hashers import check_password
+
+
+USER_PROFILE_COLUMNS = [
+    "id",
+    "role_id",
+    "first_name",
+    "last_name",
+    "email",
+    "mobile",
+    "profile_image",
+    "date_of_birth",
+    "gender",
+    "email_verified",
+    "is_active",
+    "total_orders",
+    "total_spent",
+    "last_order_at",
+    "created_at"
+]
+
+
+def _serialize_user_profile(row):
+    (
+        id,
+        role_id,
+        first_name,
+        last_name,
+        email,
+        mobile,
+        profile_image,
+        date_of_birth,
+        gender,
+        email_verified,
+        is_active,
+        total_orders,
+        total_spent,
+        last_order_at,
+        created_at
+    ) = row
+
+    return {
+        "id": id,
+        "role_id": role_id,
+        "first_name": first_name,
+        "last_name": last_name,
+        "email": email,
+        "mobile": mobile,
+        "profile_image": profile_image,
+        "date_of_birth": date_of_birth,
+        "gender": gender,
+        "email_verified": email_verified,
+        "is_active": is_active,
+        "total_orders": total_orders or 0,
+        "total_spent": float(total_spent) if total_spent is not None else 0.0,
+        "last_order_at": last_order_at,
+        "created_at": created_at
+    }
 
 
 def register_user_logic(data):
@@ -105,8 +162,13 @@ def verify_user_email_logic(data):
                 email,
                 mobile,
                 profile_image,
+                date_of_birth,
+                gender,
                 email_verified,
                 is_active,
+                total_orders,
+                total_spent,
+                last_order_at,
                 created_at
             FROM users
             WHERE email=%s
@@ -127,8 +189,13 @@ def verify_user_email_logic(data):
             email,
             mobile,
             profile_image,
+            date_of_birth,
+            gender,
             email_verified,
             is_active,
+            total_orders,
+            total_spent,
+            last_order_at,
             created_at
         ) = user
 
@@ -185,8 +252,13 @@ def verify_user_email_logic(data):
             "email": email,
             "mobile": mobile,
             "profile_image": profile_image,
+            "date_of_birth": date_of_birth,
+            "gender": gender,
             "email_verified": True,
             "is_active": is_active,
+            "total_orders": total_orders or 0,
+            "total_spent": float(total_spent) if total_spent is not None else 0.0,
+            "last_order_at": last_order_at,
             "created_at": created_at
         }
     }, 200
@@ -264,4 +336,103 @@ def login_admin_logic(data):
             "mobile": mobile,
             "profile_image": profile_image
         }
+    }, 200
+
+
+
+def get_user_profile_logic(user_id):
+
+    columns_str = ", ".join(USER_PROFILE_COLUMNS)
+
+    with connection.cursor() as cursor:
+
+        cursor.execute(
+            f"""
+            SELECT {columns_str}
+            FROM users
+            WHERE id = %s
+            AND is_deleted = FALSE
+            """,
+            [user_id]
+        )
+
+        row = cursor.fetchone()
+
+    if not row:
+        return {"message": "User not found."}, 404
+
+    return {
+        "message": "Profile fetched successfully.",
+        "data": _serialize_user_profile(row)
+    }, 200
+
+
+
+def update_user_profile_logic(data, user_id):
+
+    updatable_fields = [
+        "first_name",
+        "last_name",
+        "mobile",
+        "date_of_birth",
+        "gender"
+    ]
+
+    image = data.get("profile_image")
+
+    with connection.cursor() as cursor:
+
+        cursor.execute(
+            """
+            SELECT id
+            FROM users
+            WHERE id = %s
+            AND is_deleted = FALSE
+            """,
+            [user_id]
+        )
+
+        if not cursor.fetchone():
+            return {"message": "User not found."}, 404
+
+    set_parts = []
+    values = []
+
+    for field in updatable_fields:
+        if field in data:
+            set_parts.append(f"{field} = %s")
+            values.append(data[field])
+
+    if image:
+        uploaded = upload_image_to_imagekit(
+            image=image,
+            folder="/profile_images"
+        )
+
+        set_parts.append("profile_image = %s")
+        values.append(uploaded["url"])
+
+    if not set_parts:
+        return {"message": "No fields to update."}, 400
+
+    set_parts.append("updated_at = NOW()")
+
+    values.append(user_id)
+
+    sql = f"""
+        UPDATE users
+        SET {', '.join(set_parts)}
+        WHERE id = %s
+        AND is_deleted = FALSE
+    """
+
+    with connection.cursor() as cursor:
+        cursor.execute(sql, values)
+        connection.commit()
+
+    profile_data, _ = get_user_profile_logic(user_id)
+
+    return {
+        "message": "Profile updated successfully.",
+        "data": profile_data.get("data")
     }, 200
