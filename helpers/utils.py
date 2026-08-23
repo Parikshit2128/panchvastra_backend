@@ -300,6 +300,62 @@ def send_verification_otp(email, otp):
         raise
 
 
+def send_restock_notification_email(email, product_name, color, size):
+    try:
+        smtp_server = os.getenv("EMAIL_HOST")
+        smtp_port = int(os.getenv("EMAIL_PORT"))
+        smtp_email = os.getenv("EMAIL_HOST_USER")
+        smtp_password = os.getenv("EMAIL_HOST_PASSWORD")
+
+        message = MIMEMultipart("alternative")
+        message["Subject"] = f"{product_name} is back in stock!"
+        message["From"] = f"Panchvastra <{smtp_email}>"
+        message["To"] = email
+
+        html = f"""
+        <html>
+            <body style="font-family: Arial, sans-serif;">
+                <h2>Panchvastra</h2>
+
+                <p>Good news! The item you were waiting for is back in stock:</p>
+
+                <div style="
+                    font-size:18px;
+                    font-weight:bold;
+                    color:#0d6efd;
+                    margin:20px 0;">
+                    {product_name} - {color} - {size}
+                </div>
+
+                <p>Hurry, grab it before it runs out again.</p>
+
+                <hr>
+
+                <small>
+                    You are receiving this email because you asked to be notified
+                    when this item was back in stock.
+                </small>
+            </body>
+        </html>
+        """
+
+        message.attach(MIMEText(html, "html"))
+
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_email, smtp_password)
+            server.sendmail(
+                smtp_email,
+                email,
+                message.as_string()
+            )
+
+        print(f"Restock notification email sent to {email}.")
+
+    except Exception:
+        traceback.print_exc()
+
+
 def decode_jwt_token(token):
 
     if not token:

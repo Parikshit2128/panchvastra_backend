@@ -4,7 +4,7 @@ import math
 from django.db import connection
 from rest_framework import status
 from django.db import transaction
-from helpers.utils import db_query_result_to_json, delete_image_from_imagekit, paginate_queryset, upload_image_to_imagekit
+from helpers.utils import db_query_result_to_json, delete_image_from_imagekit, paginate_queryset, send_restock_notification_email, upload_image_to_imagekit
 
 def create_category(data, user_id):
 
@@ -3044,6 +3044,8 @@ def update_product(data, user_id):
             # Upsert Product Variants
             # --------------------------------------------------
 
+            restocked_size_ids = []
+
             for variant in variants:
 
                 variant_id = variant.get("id")
@@ -3182,6 +3184,20 @@ def update_product(data, user_id):
 
                         cursor.execute(
                             """
+                            SELECT stock_quantity
+                            FROM product_variant_sizes
+                            WHERE id=%s
+                            AND variant_id=%s
+                            AND is_deleted=FALSE
+                            """,
+                            [size_id, variant_id]
+                        )
+
+                        previous_row = cursor.fetchone()
+                        previous_stock = previous_row[0] if previous_row else 0
+
+                        cursor.execute(
+                            """
                             UPDATE product_variant_sizes
                             SET
                                 size=%s,
@@ -3202,6 +3218,12 @@ def update_product(data, user_id):
                                 variant_id
                             ]
                         )
+
+                        if (
+                            (not previous_stock or previous_stock <= 0)
+                            and size["stock_quantity"] > 0
+                        ):
+                            restocked_size_ids.append(size_id)
 
                     else:
 
@@ -3245,6 +3267,9 @@ def update_product(data, user_id):
         except Exception:
             connection.rollback()
             raise
+
+    for size_id in restocked_size_ids:
+        notify_users_for_restock(size_id)
 
     product_data, _ = get_product_detail(
         product_id=product_id
@@ -3747,3 +3772,267 @@ def delete_address(address_id, user_id):
         "message": "Address deleted successfully.",
         "data": {}
     }, status.HTTP_200_OK
+
+
+
+def create_notify_me_request(validated_data, user_id=None):
+
+    variant_size_id = validated_data["variant_size_id"]
+    email = validated_data["email"].strip().lower()
+
+    with connection.cursor() as cursor:
+
+        cursor.execute(
+            """
+            SELECT
+                pvs.stock_quantity,
+                pvs.size,
+                v.color,
+                p.name
+            FROM product_variant_sizes pvs
+            INNER JOIN product_variants v ON v.id = pvs.variant_id
+            INNER JOIN products p ON p.id = v.product_id
+            WHERE pvs.id = %s
+            AND pvs.is_deleted = FALSE
+            """,
+            [variant_size_id]
+        )
+
+        row = cursor.fetchone()
+
+        if not row:
+            return {
+                "message": "Product size not found.",
+                "data": {}
+            }, status.HTTP_404_NOT_FOUND
+
+        stock_quantity, size, color, product_name = row
+
+        if stock_quantity and stock_quantity > 0:
+            return {
+                "message": "This size is already in stock.",
+                "data": {}
+            }, status.HTTP_400_BAD_REQUEST
+
+        cursor.execute(
+            """
+            SELECT id
+            FROM notify_me_requests
+            WHERE variant_size_id = %s
+            AND LOWER(email) = %s
+            AND is_notified = FALSE
+            AND is_deleted = FALSE
+            """,
+            [variant_size_id, email]
+        )
+
+        existing = cursor.fetchone()
+
+        if existing:
+            return {
+                "message": "You will be notified by email when this size is back in stock.",
+                "data": {"id": existing[0]}
+            }, status.HTTP_200_OK
+
+        cursor.execute(
+            """
+            INSERT INTO notify_me_requests
+            (
+                variant_size_id,
+                email,
+                user_id,
+                created_at,
+                updated_at
+            )
+            VALUES
+            (
+                %s,
+                %s,
+                %s,
+                NOW(),
+                NOW()
+            )
+            RETURNING id
+            """,
+            [variant_size_id, email, user_id]
+        )
+
+        notify_me_id = cursor.fetchone()[0]
+
+        connection.commit()
+
+    return {
+        "message": "You will be notified by email when this size is back in stock.",
+        "data": {
+            "id": notify_me_id,
+            "product_name": product_name,
+            "color": color,
+            "size": size
+        }
+    }, status.HTTP_201_CREATED
+
+
+
+def get_notify_me_requests(variant_size_id=None, page=1, page_size=10):
+
+    page = max(int(page), 1)
+    page_size = max(int(page_size), 1)
+
+    where_conditions = [
+        "n.is_deleted = FALSE",
+        "n.is_notified = FALSE"
+    ]
+
+    params = []
+
+    if variant_size_id:
+        where_conditions.append("n.variant_size_id = %s")
+        params.append(variant_size_id)
+
+    where_clause = " AND ".join(where_conditions)
+
+    sql = f"""
+        SELECT
+            n.id,
+            n.variant_size_id,
+            n.email,
+            n.user_id,
+            n.created_at,
+            pvs.size,
+            pvs.stock_quantity,
+            v.color,
+            p.id AS product_id,
+            p.name AS product_name
+        FROM notify_me_requests n
+        INNER JOIN product_variant_sizes pvs ON pvs.id = n.variant_size_id
+        INNER JOIN product_variants v ON v.id = pvs.variant_id
+        INNER JOIN products p ON p.id = v.product_id
+        WHERE {where_clause}
+        ORDER BY n.created_at DESC
+    """
+
+    with connection.cursor() as cursor:
+
+        cursor.execute(sql, params)
+
+        rows = cursor.fetchall()
+
+        if not rows:
+            return {
+                "message": "Data not found.",
+                "data": []
+            }, status.HTTP_200_OK
+
+        columns = [col[0] for col in cursor.description]
+
+        result = db_query_result_to_json(rows, columns)
+
+        paginated_list, pagination = paginate_queryset(
+            result,
+            page,
+            page_size
+        )
+
+    return {
+        "message": "Data fetched successfully.",
+        "data": paginated_list,
+        "pagination": pagination
+    }, status.HTTP_200_OK
+
+
+
+def delete_notify_me_request(notify_me_id, email):
+
+    if not notify_me_id or not email:
+        return {
+            "message": "id and email are required.",
+            "data": {}
+        }, status.HTTP_400_BAD_REQUEST
+
+    with connection.cursor() as cursor:
+
+        cursor.execute(
+            """
+            UPDATE notify_me_requests
+            SET
+                is_deleted = TRUE,
+                is_active = FALSE,
+                updated_at = NOW()
+            WHERE id = %s
+            AND LOWER(email) = LOWER(%s)
+            AND is_deleted = FALSE
+            RETURNING id
+            """,
+            [notify_me_id, email.strip()]
+        )
+
+        if not cursor.fetchone():
+            return {
+                "message": "Notify me request not found.",
+                "data": {}
+            }, status.HTTP_404_NOT_FOUND
+
+        connection.commit()
+
+    return {
+        "message": "Notify me request cancelled successfully.",
+        "data": {}
+    }, status.HTTP_200_OK
+
+
+
+def notify_users_for_restock(variant_size_id):
+
+    with connection.cursor() as cursor:
+
+        cursor.execute(
+            """
+            SELECT
+                n.id,
+                n.email,
+                pvs.size,
+                v.color,
+                p.name
+            FROM notify_me_requests n
+            INNER JOIN product_variant_sizes pvs ON pvs.id = n.variant_size_id
+            INNER JOIN product_variants v ON v.id = pvs.variant_id
+            INNER JOIN products p ON p.id = v.product_id
+            WHERE n.variant_size_id = %s
+            AND n.is_notified = FALSE
+            AND n.is_deleted = FALSE
+            """,
+            [variant_size_id]
+        )
+
+        pending_requests = cursor.fetchall()
+
+        if not pending_requests:
+            return
+
+        notified_ids = []
+
+        for notify_me_id, email, size, color, product_name in pending_requests:
+
+            send_restock_notification_email(
+                email=email,
+                product_name=product_name,
+                color=color,
+                size=size
+            )
+
+            notified_ids.append(notify_me_id)
+
+        cursor.execute(
+            """
+            UPDATE notify_me_requests
+            SET
+                is_notified = TRUE,
+                is_active = FALSE,
+                notified_at = NOW(),
+                updated_at = NOW()
+            WHERE id = ANY(%s)
+            """,
+            [notified_ids]
+        )
+
+        connection.commit()

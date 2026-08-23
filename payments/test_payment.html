@@ -6,74 +6,100 @@
 
 <body>
 
+<div>
+    <label>JWT Token:</label><br>
+    <input id="token" type="text" size="100"
+        value="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxLCJ1c2VyX3JvbGVfaWQiOjIsImV4cCI6MTc5MDAzNDMyMX0.ClHB8mFYpWdV4BAYl0_3GBkqZaxO4gN51S8DuApN5Xs">
+</div>
+
+<div>
+    <label>Address ID:</label>
+    <input id="address_id" type="number" value="3">
+</div>
+
+<div>
+    <label>Coupon Code (optional):</label>
+    <input id="coupon_code" type="text">
+</div>
+
+<br>
+
 <button onclick="startPayment()">Pay Now</button>
+
+<pre id="log"></pre>
 
 <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
 
 <script>
 
+function log(label, data) {
+    console.log(label, data);
+    document.getElementById("log").textContent += label + "\n" + JSON.stringify(data, null, 2) + "\n\n";
+}
+
 async function startPayment() {
 
-    // Step 1: call your backend
-    const res = await fetch("http://localhost:8001/v1/checkout_payment/", {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-            "customer_name": "John Doe",
-            "customer_email": "john@example.com",
-            "customer_mobile": "9876543210",
+    const token = document.getElementById("token").value.trim();
+    const addressId = parseInt(document.getElementById("address_id").value, 10);
+    const couponCode = document.getElementById("coupon_code").value.trim();
 
-            "address_line_1": "Flat 12, Green Apartments",
-            "address_line_2": "Near City Mall",
-            "landmark": "City Mall",
-            "city": "Bhopal",
-            "state": "Madhya Pradesh",
-            "pincode": "462001",
+    try {
 
-            "items": [
-                {
-                "product_id": 12,
-                "product_name": "Test Product - Rs 1",
-                "size": "M",
-                "color": "Test",
-                "quantity": 1,
-                "mrp": 1,
-                "selling_price": 1
-                }
-            ]
-        })
-    });
+        // Step 1: call your backend to create the order
+        // (checkout now reads the logged-in user's cart + saved address server-side,
+        // it no longer accepts item/address details directly)
+        const res = await fetch("http://localhost:8001/v1/checkout_payment/", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + token
+            },
+            body: JSON.stringify({
+                address_id: addressId,
+                coupon_code: couponCode || undefined
+            })
+        });
 
-    const data = await res.json();
+        const data = await res.json();
+        log("checkout_payment response:", data);
 
-    // Step 2: open Razorpay
-    const options = {
-        key: data.key,
-        amount: data.amount,
-        currency: data.currency,
-        order_id: data.razorpay_order_id,
-
-        handler: async function (response) {
-
-            console.log("Payment Response:", response);
-
-            // Step 3: verify payment
-            const verify = await fetch("http://localhost:8001/v1/verify_payment_api/", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify(response)
-            });
-
-            console.log(await verify.json());
+        if (!res.ok || !data.razorpay_order_id) {
+            alert("Checkout failed: " + (data.message || res.status));
+            return;
         }
-    };
 
-    const rzp = new Razorpay(options);
-    rzp.open();
+        // Step 2: open Razorpay
+        const options = {
+            key: data.key,
+            amount: data.amount,
+            currency: data.currency,
+            order_id: data.razorpay_order_id,
+
+            handler: async function (response) {
+
+                log("Razorpay handler response:", response);
+
+                // Step 3: verify payment
+                const verify = await fetch("http://localhost:8001/v1/verify_payment_api/", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Authorization": "Bearer " + token
+                    },
+                    body: JSON.stringify(response)
+                });
+
+                log("verify_payment_api response:", await verify.json());
+            }
+        };
+
+        const rzp = new Razorpay(options);
+        rzp.open();
+
+    } catch (err) {
+        console.error(err);
+        alert("Request failed, check the console: " + err.message);
+    }
 }
 
 </script>

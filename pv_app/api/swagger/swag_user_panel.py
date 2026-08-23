@@ -5,7 +5,7 @@ from drf_spectacular.utils import (
     OpenApiTypes
 )
 
-from pv_app.api.serializer.sz_user_panel import AddToCartSerializer, CouponSerializer, CreateAddressSerializer, CreateCategorySerializer, CreateProductSerializer, UpdateAddressSerializer, UpdateCartSerializer, UpdateCategorySerializer, UpdateCouponSerializer, UpdateProductSerializer
+from pv_app.api.serializer.sz_user_panel import AddToCartSerializer, CouponSerializer, CreateAddressSerializer, CreateCategorySerializer, CreateProductSerializer, NotifyMeSerializer, UpdateAddressSerializer, UpdateCartSerializer, UpdateCategorySerializer, UpdateCouponSerializer, UpdateProductSerializer
 
 
 categories_management_schema = extend_schema_view(
@@ -356,6 +356,67 @@ address_management_schema = extend_schema_view(
     ),
 )
 
+
+
+
+notify_me_schema = extend_schema_view(
+
+    post=extend_schema(
+        tags=["Notify Me"],
+        summary="Subscribe to restock notification",
+        description="Registers an email to be notified when a specific out-of-stock product size becomes available again.",
+        request=NotifyMeSerializer,
+    ),
+
+    get=extend_schema(
+        tags=["Notify Me"],
+        summary="List pending notify-me requests",
+        description="Returns pending (not yet notified) restock subscriptions, optionally filtered by variant_size_id.",
+        parameters=[
+            OpenApiParameter(
+                name="variant_size_id",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description="Filter by a specific product variant size ID."
+            ),
+            OpenApiParameter(
+                name="page",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False
+            ),
+            OpenApiParameter(
+                name="page_size",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False
+            ),
+        ],
+    ),
+
+    delete=extend_schema(
+        tags=["Notify Me"],
+        summary="Cancel a notify-me subscription",
+        description="Cancels a pending restock notification subscription. Requires the subscription id and the matching email.",
+        parameters=[
+            OpenApiParameter(
+                name="id",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description="Unique ID of the notify-me request to cancel."
+            ),
+            OpenApiParameter(
+                name="email",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description="Email used when subscribing, used to verify ownership."
+            ),
+        ],
+    ),
+)
 
 
 

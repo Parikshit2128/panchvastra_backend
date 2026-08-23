@@ -221,6 +221,11 @@ class UpdateAddressSerializer(serializers.Serializer):
     is_default = serializers.BooleanField(required=False)
 
 
+class NotifyMeSerializer(serializers.Serializer):
+    variant_size_id = serializers.IntegerField(required=True)
+    email = serializers.EmailField(required=True)
+
+
 class UpdateProductSerializer(CreateProductSerializer):
 
     id = serializers.IntegerField()

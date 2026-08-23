@@ -4,9 +4,9 @@ from rest_framework import status
 
 from helpers.middleware import user_authentication_required
 from helpers.utils import generic_response_handler
-from pv_app.api.business_logic.bl_user_panel import add_to_cart, create_address, create_category, create_coupon, create_product, delete_address, delete_cart_item, delete_category, delete_coupon, delete_product, get_addresses, get_cart, get_categories, get_coupons, get_order_detail, get_order_listing, get_product_detail, get_product_listing, update_address, update_cart_quantity, update_category, update_coupon, update_product
-from pv_app.api.serializer.sz_user_panel import AddToCartSerializer, CouponSerializer, CreateAddressSerializer, CreateCategorySerializer, CreateProductSerializer, UpdateAddressSerializer, UpdateCartSerializer, UpdateCategorySerializer, UpdateCouponSerializer, UpdateProductSerializer
-from pv_app.api.swagger.swag_user_panel import address_management_schema, categories_management_schema, products_management_schema, cart_management_schema, coupon_management_schema, orders_schema
+from pv_app.api.business_logic.bl_user_panel import add_to_cart, create_address, create_category, create_coupon, create_notify_me_request, create_product, delete_address, delete_cart_item, delete_category, delete_coupon, delete_notify_me_request, delete_product, get_addresses, get_cart, get_categories, get_coupons, get_notify_me_requests, get_order_detail, get_order_listing, get_product_detail, get_product_listing, update_address, update_cart_quantity, update_category, update_coupon, update_product
+from pv_app.api.serializer.sz_user_panel import AddToCartSerializer, CouponSerializer, CreateAddressSerializer, CreateCategorySerializer, CreateProductSerializer, NotifyMeSerializer, UpdateAddressSerializer, UpdateCartSerializer, UpdateCategorySerializer, UpdateCouponSerializer, UpdateProductSerializer
+from pv_app.api.swagger.swag_user_panel import address_management_schema, categories_management_schema, products_management_schema, cart_management_schema, coupon_management_schema, notify_me_schema, orders_schema
 
 
 
@@ -343,6 +343,41 @@ def address_management(request):
         return delete_address(
             address_id,
             user_id
+        )
+
+
+
+@notify_me_schema
+@api_view(["GET", "POST", "DELETE"])
+@generic_response_handler
+def notify_me_management(request):
+
+    if request.method == "POST":
+        serializer = NotifyMeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        return create_notify_me_request(
+            serializer.validated_data
+        )
+
+    elif request.method == "GET":
+        variant_size_id = request.GET.get("variant_size_id")
+        page = int(request.GET.get("page", 1))
+        page_size = int(request.GET.get("page_size", 10))
+
+        return get_notify_me_requests(
+            variant_size_id=variant_size_id,
+            page=page,
+            page_size=page_size
+        )
+
+    elif request.method == "DELETE":
+        notify_me_id = request.GET.get("id")
+        email = request.GET.get("email")
+
+        return delete_notify_me_request(
+            notify_me_id,
+            email
         )
 
 
