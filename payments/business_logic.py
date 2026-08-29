@@ -228,9 +228,9 @@ def create_checkout_payment(validated_data, user_id):
                 order_number, user_id, customer_name, customer_email, customer_mobile,
                 address_line_1, address_line_2, landmark, city, state, country, pincode,
                 subtotal, discount_amount, shipping_amount, tax_amount, grand_total,
-                coupon_id, payment_status, order_status
+                coupon_id, payment_method, payment_status, order_status
             )
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,0,0,%s,%s,'PENDING','PLACED')
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,0,0,%s,%s,'RAZORPAY','PENDING','PLACED')
             RETURNING id;
         """, [
             order_number, user_id, customer_name, customer_email, customer_mobile,
@@ -286,6 +286,310 @@ def create_checkout_payment(validated_data, user_id):
         "amount": int(round(grand_total * 100)),
         "currency": "INR",
         "key": settings.RAZORPAY_KEY_ID
+    }, 201
+
+
+
+class _CheckoutAborted(Exception):
+    """Raised to unwind the COD transaction.atomic() block with a specific response."""
+
+    def __init__(self, payload, status_code):
+        self.payload = payload
+        self.status_code = status_code
+
+
+def create_cod_order(validated_data, user_id):
+
+    address_id = validated_data["address_id"]
+    coupon_code = validated_data.get("coupon_code")
+
+    try:
+        with transaction.atomic():
+            with connection.cursor() as cursor:
+
+                # 1. Account
+                cursor.execute("""
+                    SELECT email
+                    FROM public.users
+                    WHERE id = %s
+                    AND is_deleted = FALSE
+                    AND is_active = TRUE
+                """, [user_id])
+
+                user_row = cursor.fetchone()
+
+                if not user_row:
+                    raise _CheckoutAborted({"message": "User not found."}, 404)
+
+                customer_email = user_row[0]
+
+                # 2. Saved address (must belong to the authenticated user)
+                cursor.execute("""
+                    SELECT
+                        full_name, mobile, address_line_1, address_line_2,
+                        landmark, city, state, country, pincode
+                    FROM public.addresses
+                    WHERE id = %s
+                    AND user_id = %s
+                    AND is_deleted = FALSE
+                """, [address_id, user_id])
+
+                address_row = cursor.fetchone()
+
+                if not address_row:
+                    raise _CheckoutAborted({"message": "Address not found."}, 404)
+
+                (
+                    customer_name,
+                    customer_mobile,
+                    address_line_1,
+                    address_line_2,
+                    landmark,
+                    city,
+                    state,
+                    country,
+                    pincode
+                ) = address_row
+
+                # 3a. Cart items, priced from the DB. Plain read (no lock yet —
+                # Postgres won't allow FOR UPDATE on the nullable side of these
+                # outer joins) just to work out which cart rows still resolve to
+                # a live, active size/variant/product.
+                cursor.execute("""
+                    SELECT
+                        ci.id AS cart_item_id,
+                        ci.quantity,
+                        pvs.id AS variant_size_id,
+                        pvs.size,
+                        pvs.is_active AS size_active,
+                        pvs.is_deleted AS size_deleted,
+                        v.id AS variant_id,
+                        v.color,
+                        v.mrp,
+                        v.selling_price,
+                        v.is_active AS variant_active,
+                        v.is_deleted AS variant_deleted,
+                        p.id AS product_id,
+                        p.name AS product_name,
+                        p.is_active AS product_active,
+                        p.is_deleted AS product_deleted
+                    FROM public.cart_items ci
+                    LEFT JOIN public.product_variant_sizes pvs ON pvs.id = ci.variant_size_id
+                    LEFT JOIN public.product_variants v ON v.id = pvs.variant_id
+                    LEFT JOIN public.products p ON p.id = v.product_id
+                    WHERE ci.user_id = %s
+                    AND ci.is_deleted = FALSE
+                    AND ci.is_active = TRUE
+                """, [user_id])
+
+                cart_rows = cursor.fetchall()
+
+                if not cart_rows:
+                    raise _CheckoutAborted({"message": "Your cart is empty."}, 400)
+
+                candidates = []
+                unavailable_items = []
+
+                for (
+                    cart_item_id, quantity, variant_size_id, size,
+                    size_active, size_deleted, variant_id, color, mrp, selling_price,
+                    variant_active, variant_deleted, product_id, product_name,
+                    product_active, product_deleted
+                ) in cart_rows:
+
+                    # The size (or its variant/product) was removed or deactivated
+                    # by an admin after this item was added to the cart.
+                    if (
+                        variant_size_id is None
+                        or size_deleted or not size_active
+                        or variant_deleted or not variant_active
+                        or product_deleted or not product_active
+                    ):
+                        unavailable_items.append({
+                            "cart_item_id": cart_item_id,
+                            "product_name": product_name,
+                            "size": size,
+                            "color": color
+                        })
+                        continue
+
+                    candidates.append({
+                        "variant_size_id": variant_size_id,
+                        "product_id": product_id,
+                        "variant_id": variant_id,
+                        "product_name": product_name,
+                        "size": size,
+                        "color": color,
+                        "quantity": quantity,
+                        "mrp": float(mrp),
+                        "selling_price": float(selling_price)
+                    })
+
+                if unavailable_items:
+                    raise _CheckoutAborted({
+                        "message": "Some items in your cart are no longer available. Please review your cart.",
+                        "data": {"unavailable_items": unavailable_items}
+                    }, 400)
+
+                # 3b. Lock the actual stock rows (a plain, non-outer-joined SELECT,
+                # so FOR UPDATE is allowed here) and re-check stock against that
+                # locked snapshot — this is what actually prevents a concurrent
+                # order from overselling the same size.
+                cursor.execute("""
+                    SELECT id, stock_quantity
+                    FROM public.product_variant_sizes
+                    WHERE id = ANY(%s)
+                    FOR UPDATE
+                """, [[c["variant_size_id"] for c in candidates]])
+
+                locked_stock = dict(cursor.fetchall())
+
+                items = []
+                insufficient_stock = []
+                subtotal = 0.0
+
+                for candidate in candidates:
+
+                    available = locked_stock.get(candidate["variant_size_id"], 0)
+
+                    if candidate["quantity"] > available:
+                        insufficient_stock.append({
+                            "product_name": candidate["product_name"],
+                            "size": candidate["size"],
+                            "color": candidate["color"],
+                            "requested": candidate["quantity"],
+                            "available": available
+                        })
+                        continue
+
+                    total_amount = round(candidate["selling_price"] * candidate["quantity"], 2)
+                    subtotal += total_amount
+
+                    items.append({**candidate, "total_amount": total_amount})
+
+                if insufficient_stock:
+                    raise _CheckoutAborted({
+                        "message": "Some items in your cart don't have enough stock.",
+                        "data": {"insufficient_stock": insufficient_stock}
+                    }, 400)
+
+                subtotal = round(subtotal, 2)
+
+                # 4. Coupon (optional)
+                coupon_id = None
+                discount_amount = 0.0
+
+                if coupon_code:
+
+                    coupon_result = _validate_coupon(cursor, coupon_code, user_id, subtotal)
+
+                    if "error" in coupon_result:
+                        raise _CheckoutAborted({"message": coupon_result["error"]}, 400)
+
+                    coupon_id = coupon_result["coupon_id"]
+                    discount_amount = coupon_result["discount_amount"]
+
+                grand_total = round(subtotal - discount_amount, 2)
+
+                # 5. Insert order. COD is confirmed immediately — there's no
+                # gateway round-trip and no later webhook to reconcile stock,
+                # so this whole block commits or rolls back as one unit.
+                order_number = f"ORD-{uuid.uuid4().hex[:10].upper()}"
+
+                cursor.execute("""
+                    INSERT INTO public.orders (
+                        order_number, user_id, customer_name, customer_email, customer_mobile,
+                        address_line_1, address_line_2, landmark, city, state, country, pincode,
+                        subtotal, discount_amount, shipping_amount, tax_amount, grand_total,
+                        coupon_id, payment_method, payment_status, order_status,
+                        ordered_at, created_at, updated_at
+                    )
+                    VALUES (
+                        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                        %s,%s,0,0,%s,
+                        %s,'COD','PENDING','PLACED',
+                        NOW(),NOW(),NOW()
+                    )
+                    RETURNING id;
+                """, [
+                    order_number, user_id, customer_name, customer_email, customer_mobile,
+                    address_line_1, address_line_2, landmark, city, state, country, pincode,
+                    subtotal, discount_amount, grand_total, coupon_id
+                ])
+
+                order_id = cursor.fetchone()[0]
+
+                # 6. Order items + stock decrement. The rows are already locked
+                # (step 3), but the WHERE guard is kept as a belt-and-braces check.
+                for item in items:
+
+                    cursor.execute("""
+                        INSERT INTO public.order_items (
+                            order_id, product_id, variant_id, product_name, size, color,
+                            quantity, mrp, selling_price, total_amount, created_at, updated_at
+                        )
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW())
+                    """, [
+                        order_id, item["product_id"], item["variant_id"], item["product_name"],
+                        item["size"], item["color"], item["quantity"], item["mrp"],
+                        item["selling_price"], item["total_amount"]
+                    ])
+
+                    cursor.execute("""
+                        UPDATE public.product_variant_sizes
+                        SET stock_quantity = stock_quantity - %s
+                        WHERE id = %s
+                        AND stock_quantity >= %s
+                        RETURNING stock_quantity
+                    """, [item["quantity"], item["variant_size_id"], item["quantity"]])
+
+                    if cursor.fetchone() is None:
+                        raise _CheckoutAborted({
+                            "message": f"{item['product_name']} ({item['color']}, {item['size']}) sold out just now. Please update your cart and try again."
+                        }, 409)
+
+                # 7. Purchased items no longer belong in the cart.
+                cursor.execute("""
+                    UPDATE public.cart_items
+                    SET is_deleted = TRUE, is_active = FALSE, updated_at = NOW()
+                    WHERE user_id = %s
+                    AND variant_size_id = ANY(%s)
+                    AND is_deleted = FALSE
+                """, [user_id, [item["variant_size_id"] for item in items]])
+
+                # 8. The order is confirmed now even though cash hasn't been
+                # collected yet, so a one-time coupon or first-order eligibility
+                # can't be replayed by placing several COD orders back to back.
+                cursor.execute("""
+                    UPDATE public.users
+                    SET
+                        total_orders = COALESCE(total_orders, 0) + 1,
+                        last_order_at = NOW()
+                    WHERE id = %s
+                """, [user_id])
+
+                if coupon_id:
+                    cursor.execute("""
+                        UPDATE public.coupons
+                        SET used_count = COALESCE(used_count, 0) + 1
+                        WHERE id = %s
+                    """, [coupon_id])
+
+    except _CheckoutAborted as e:
+        return e.payload, e.status_code
+
+    return {
+        "message": "Order placed successfully. Pay with cash on delivery.",
+        "data": {
+            "order_id": order_id,
+            "order_number": order_number,
+            "payment_method": "COD",
+            "payment_status": "PENDING",
+            "order_status": "PLACED",
+            "subtotal": subtotal,
+            "discount_amount": discount_amount,
+            "grand_total": grand_total
+        }
     }, 201
 
 

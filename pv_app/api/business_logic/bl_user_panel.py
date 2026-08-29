@@ -1176,7 +1176,7 @@ def create_coupon(validated_data, user_id):
                 is_first_order_only,
                 created_by,
                 updated_by,
-                is_active,
+                is_active
             )
             VALUES
             (
