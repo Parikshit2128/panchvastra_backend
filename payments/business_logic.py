@@ -716,6 +716,12 @@ def _apply_payment_status(cursor, payment_id, order_id, user_id, grand_total, co
 
 def verify_payment(validated_data, user_id):
 
+    print(
+        f"[verify_payment] called: user_id={user_id} "
+        f"razorpay_order_id={validated_data['razorpay_order_id']} "
+        f"razorpay_payment_id={validated_data['razorpay_payment_id']}"
+    )
+
     generated_signature = hmac.new(
         key=bytes(settings.RAZORPAY_KEY_SECRET, "utf-8"),
         msg=bytes(
@@ -726,6 +732,7 @@ def verify_payment(validated_data, user_id):
     ).hexdigest()
 
     if not hmac.compare_digest(generated_signature, validated_data["razorpay_signature"]):
+        print(f"[verify_payment] signature mismatch for razorpay_order_id={validated_data['razorpay_order_id']}")
         return {"message": "Invalid signature."}, 400
 
     with transaction.atomic():
@@ -746,9 +753,18 @@ def verify_payment(validated_data, user_id):
             row = cursor.fetchone()
 
             if not row:
+                print(
+                    f"[verify_payment] no matching payment/order row for "
+                    f"razorpay_order_id={validated_data['razorpay_order_id']} user_id={user_id}"
+                )
                 return {"message": "Order not found."}, 404
 
             payment_id, order_id, order_user_id, grand_total, existing_payment_status, coupon_id = row
+
+            print(
+                f"[verify_payment] matched order_id={order_id} payment_id={payment_id} "
+                f"existing_payment_status={existing_payment_status}"
+            )
 
             if existing_payment_status != "SUCCESS":
                 _apply_payment_status(
@@ -762,6 +778,9 @@ def verify_payment(validated_data, user_id):
                     validated_data["razorpay_payment_id"],
                     json.dumps({"source": "verify_payment_api"})
                 )
+                print(f"[verify_payment] applied SUCCESS for order_id={order_id}")
+            else:
+                print(f"[verify_payment] order_id={order_id} already SUCCESS, skipping (idempotent)")
 
     return {"message": "Payment verified successfully."}, 200
 
@@ -772,17 +791,33 @@ def razorpay_webhook_handler(request):
 
     signature = request.headers.get("X-Razorpay-Signature")
 
+    print(f"[webhook] received, body_len={len(payload)} has_signature_header={signature is not None}")
+
+    webhook_secret = settings.RAZORPAY_WEBHOOK_SECRET
+
+    if not webhook_secret:
+        # A misconfigured deployment (env var missing/empty), not a bad
+        # request — surface it distinctly in the logs so it isn't mistaken
+        # for a signature-forgery attempt. 500 tells Razorpay to retry once
+        # the config is fixed, instead of every delivery being silently
+        # rejected forever.
+        print("[webhook] RAZORPAY_WEBHOOK_SECRET is not configured; rejecting webhook delivery.")
+        return Response({"message": "Webhook not configured"}, status=500)
+
     expected_signature = hmac.new(
-        settings.RAZORPAY_WEBHOOK_SECRET.encode("utf-8"),
+        webhook_secret.encode("utf-8"),
         payload.encode("utf-8"),
         hashlib.sha256
     ).hexdigest()
 
     if not signature or not hmac.compare_digest(expected_signature, signature):
+        print("[webhook] signature check FAILED — rejecting")
         return Response(
             {"message": "Invalid signature"},
             status=400
         )
+
+    print("[webhook] signature check passed")
 
     try:
         data = json.loads(payload)
@@ -792,10 +827,16 @@ def razorpay_webhook_handler(request):
         razorpay_payment_id = payment["id"]
         status_value = payment["status"]
 
+        print(
+            f"[webhook] event={data.get('event')} razorpay_order_id={razorpay_order_id} "
+            f"razorpay_payment_id={razorpay_payment_id} status={status_value}"
+        )
+
     except (ValueError, KeyError, TypeError):
         # Not a payment.* event shape we handle (e.g. a refund.* event) —
         # acknowledge with 200 so Razorpay doesn't retry something that
         # will never succeed.
+        print("[webhook] payload didn't match the expected payment.* shape; ignoring")
         return Response({"message": "Unrecognized webhook payload; ignored."}, status=200)
 
     with transaction.atomic():
@@ -812,6 +853,7 @@ def razorpay_webhook_handler(request):
             row = cursor.fetchone()
 
             if not row:
+                print(f"[webhook] no matching payments/orders row for razorpay_order_id={razorpay_order_id}")
                 return Response(
                     {"message": "Payment not found"},
                     status=200
@@ -820,6 +862,11 @@ def razorpay_webhook_handler(request):
             payment_id, order_id, user_id, grand_total, existing_payment_status, coupon_id = row
 
             new_payment_status = "SUCCESS" if status_value == "captured" else "FAILED"
+
+            print(
+                f"[webhook] matched order_id={order_id} payment_id={payment_id} "
+                f"existing_payment_status={existing_payment_status} new_payment_status={new_payment_status}"
+            )
 
             # Only apply the transition once — repeated webhook deliveries
             # (Razorpay retries, or multiple event types for one payment)
@@ -836,6 +883,9 @@ def razorpay_webhook_handler(request):
                     razorpay_payment_id,
                     json.dumps(data)
                 )
+                print(f"[webhook] applied {new_payment_status} for order_id={order_id}")
+            else:
+                print(f"[webhook] order_id={order_id} already SUCCESS, skipping (idempotent)")
 
     return Response(
         {"message": "Webhook processed"},

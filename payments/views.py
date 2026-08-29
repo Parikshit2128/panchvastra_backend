@@ -48,5 +48,6 @@ def verify_payment_api(request):
 
 
 @api_view(["POST"])
+@generic_response_handler
 def webhook(request):
     return razorpay_webhook_handler(request)
