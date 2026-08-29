@@ -218,8 +218,8 @@ def generate_otp_with_expiry():
 
 def _store_otp(cursor, user_id, otp, expires_at):
     cursor.execute("""
-        INSERT INTO user_otps (user_id, otp, expires_at)
-        VALUES (%s, %s, %s)
+        INSERT INTO user_otps (user_id, otp, expires_at, created_at)
+        VALUES (%s, %s, %s, NOW())
         ON CONFLICT (user_id)
         DO UPDATE SET
             otp = EXCLUDED.otp,

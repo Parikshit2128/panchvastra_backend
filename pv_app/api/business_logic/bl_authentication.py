@@ -100,8 +100,8 @@ def register_user_logic(data):
             return {"message": "OTP resent to email."}, 200
 
         cursor.execute("""
-            INSERT INTO users (role_id, first_name, last_name, email, mobile)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO users (role_id, first_name, last_name, email, mobile, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, NOW(), NOW())
             RETURNING id
         """, [role_id, first_name, last_name, email, mobile])
 
@@ -229,7 +229,8 @@ def verify_user_email_logic(data):
             UPDATE users
             SET
                 email_verified = TRUE,
-                last_login_at = NOW()
+                last_login_at = NOW(),
+                updated_at = NOW()
             WHERE id = %s
         """, [user_id])
 

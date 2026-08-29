@@ -244,9 +244,15 @@ def create_checkout_payment(validated_data, user_id):
                         order_number, user_id, customer_name, customer_email, customer_mobile,
                         address_line_1, address_line_2, landmark, city, state, country, pincode,
                         subtotal, discount_amount, shipping_amount, tax_amount, grand_total,
-                        coupon_id, payment_method, payment_status, order_status
+                        coupon_id, payment_method, payment_status, order_status,
+                        ordered_at, created_at, updated_at
                     )
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,0,0,%s,%s,'RAZORPAY','PENDING','PLACED')
+                    VALUES (
+                        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                        %s,%s,0,0,%s,
+                        %s,'RAZORPAY','PENDING','PLACED',
+                        NOW(),NOW(),NOW()
+                    )
                     RETURNING id;
                 """, [
                     order_number, user_id, customer_name, customer_email, customer_mobile,
@@ -262,9 +268,9 @@ def create_checkout_payment(validated_data, user_id):
                     cursor.execute("""
                         INSERT INTO public.order_items (
                             order_id, product_id, variant_id, product_name, size, color,
-                            quantity, mrp, selling_price, total_amount
+                            quantity, mrp, selling_price, total_amount, created_at, updated_at
                         )
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW())
                     """, [
                         order_id, item["product_id"], item["variant_id"], item["product_name"],
                         item["size"], item["color"], item["quantity"], item["mrp"],
@@ -277,9 +283,11 @@ def create_checkout_payment(validated_data, user_id):
                     INSERT INTO public.payments (
                         order_id,
                         transaction_amount,
-                        payment_status
+                        payment_status,
+                        created_at,
+                        updated_at
                     )
-                    VALUES (%s,%s,'PENDING')
+                    VALUES (%s,%s,'PENDING',NOW(),NOW())
                     RETURNING id
                 """, [
                     order_id,
@@ -306,10 +314,10 @@ def create_checkout_payment(validated_data, user_id):
     except Exception:
         with connection.cursor() as cursor:
             cursor.execute("""
-                UPDATE public.payments SET payment_status='FAILED' WHERE id=%s
+                UPDATE public.payments SET payment_status='FAILED', updated_at=NOW() WHERE id=%s
             """, [payment_row_id])
             cursor.execute("""
-                UPDATE public.orders SET payment_status='FAILED', order_status='CANCELLED' WHERE id=%s
+                UPDATE public.orders SET payment_status='FAILED', order_status='CANCELLED', updated_at=NOW() WHERE id=%s
             """, [order_id])
 
         return {
@@ -318,7 +326,7 @@ def create_checkout_payment(validated_data, user_id):
 
     with connection.cursor() as cursor:
         cursor.execute("""
-            UPDATE public.payments SET razorpay_order_id=%s WHERE id=%s
+            UPDATE public.payments SET razorpay_order_id=%s, updated_at=NOW() WHERE id=%s
         """, [razorpay_order["id"], payment_row_id])
 
     return {
@@ -569,7 +577,7 @@ def create_cod_order(validated_data, user_id):
 
                     cursor.execute("""
                         UPDATE public.product_variant_sizes
-                        SET stock_quantity = stock_quantity - %s
+                        SET stock_quantity = stock_quantity - %s, updated_at = NOW()
                         WHERE id = %s
                         AND stock_quantity >= %s
                         RETURNING stock_quantity
@@ -596,14 +604,15 @@ def create_cod_order(validated_data, user_id):
                     UPDATE public.users
                     SET
                         total_orders = COALESCE(total_orders, 0) + 1,
-                        last_order_at = NOW()
+                        last_order_at = NOW(),
+                        updated_at = NOW()
                     WHERE id = %s
                 """, [user_id])
 
                 if coupon_id:
                     cursor.execute("""
                         UPDATE public.coupons
-                        SET used_count = COALESCE(used_count, 0) + 1
+                        SET used_count = COALESCE(used_count, 0) + 1, updated_at = NOW()
                         WHERE id = %s
                     """, [coupon_id])
 
@@ -639,7 +648,8 @@ def _apply_payment_status(cursor, payment_id, order_id, user_id, grand_total, co
             razorpay_payment_id=%s,
             payment_status=%s,
             gateway_response=%s,
-            paid_at=NOW()
+            paid_at=NOW(),
+            updated_at=NOW()
         WHERE id=%s
     """, [
         razorpay_payment_id,
@@ -650,7 +660,7 @@ def _apply_payment_status(cursor, payment_id, order_id, user_id, grand_total, co
 
     cursor.execute("""
         UPDATE public.orders
-        SET payment_status=%s
+        SET payment_status=%s, updated_at=NOW()
         WHERE id=%s
     """, [
         new_payment_status,
@@ -665,14 +675,15 @@ def _apply_payment_status(cursor, payment_id, order_id, user_id, grand_total, co
         SET
             total_orders = COALESCE(total_orders, 0) + 1,
             total_spent = COALESCE(total_spent, 0) + %s,
-            last_order_at = NOW()
+            last_order_at = NOW(),
+            updated_at = NOW()
         WHERE id=%s
     """, [grand_total, user_id])
 
     if coupon_id:
         cursor.execute("""
             UPDATE public.coupons
-            SET used_count = COALESCE(used_count, 0) + 1
+            SET used_count = COALESCE(used_count, 0) + 1, updated_at = NOW()
             WHERE id=%s
         """, [coupon_id])
 
@@ -682,7 +693,7 @@ def _apply_payment_status(cursor, payment_id, order_id, user_id, grand_total, co
     # be un-captured, so this is logged for manual review instead of failing.
     cursor.execute("""
         UPDATE public.product_variant_sizes pvs
-        SET stock_quantity = pvs.stock_quantity - oi.quantity
+        SET stock_quantity = pvs.stock_quantity - oi.quantity, updated_at = NOW()
         FROM public.order_items oi
         WHERE oi.order_id = %s
         AND pvs.variant_id = oi.variant_id

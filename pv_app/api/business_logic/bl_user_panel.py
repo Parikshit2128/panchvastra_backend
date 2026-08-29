@@ -1032,8 +1032,8 @@ def add_to_cart(validated_data, user_id):
                 return {"message": f"Insufficient stock. Only {available_stock} items left."}, status.HTTP_400_BAD_REQUEST
 
             cursor.execute("""
-                INSERT INTO public.cart_items (user_id, variant_size_id, quantity, created_by, updated_by)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO public.cart_items (user_id, variant_size_id, quantity, created_by, updated_by, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 ON CONFLICT (user_id, variant_size_id)
                 DO UPDATE SET
                     -- A row that was soft-deleted (e.g. cleared after a past
@@ -1060,7 +1060,7 @@ def add_to_cart(validated_data, user_id):
                 # silently overwritten by this correction.
                 cursor.execute("""
                     UPDATE public.cart_items
-                    SET quantity = %s
+                    SET quantity = %s, updated_at = CURRENT_TIMESTAMP
                     WHERE id = %s AND quantity = %s
                 """, [available_stock, cart_id, final_quantity])
                 return {"message": f"Cart adjusted to maximum available stock ({available_stock})."}, status.HTTP_200_OK
@@ -1209,11 +1209,13 @@ def create_coupon(validated_data, user_id):
                     is_first_order_only,
                     created_by,
                     updated_by,
-                    is_active
+                    is_active,
+                    created_at,
+                    updated_at
                 )
                 VALUES
                 (
-                    %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
+                    %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW()
                 )
                 RETURNING id;
             """, [
