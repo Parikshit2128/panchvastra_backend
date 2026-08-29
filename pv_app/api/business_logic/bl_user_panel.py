@@ -1,10 +1,11 @@
 import json
 import math
+import traceback
 
 from django.db import connection
 from rest_framework import status
 from django.db import transaction
-from helpers.utils import db_query_result_to_json, delete_image_from_imagekit, paginate_queryset, send_restock_notification_email, upload_image_to_imagekit
+from helpers.utils import clamp_page, clamp_page_size, db_query_result_to_json, delete_image_from_imagekit, resolve_pagination, send_restock_notification_email, upload_image_to_imagekit
 
 def create_category(data, user_id):
 
@@ -12,18 +13,6 @@ def create_category(data, user_id):
     description = data.get("description")
     image = data.get("image")
     is_active = data.get("is_active", True)
-
-    image_url = None
-    imagekit_file_id = None
-
-    if image:
-        uploaded_image = upload_image_to_imagekit(
-            image=image,
-            folder="/categories"
-        )
-
-        image_url = uploaded_image["url"]
-        imagekit_file_id = uploaded_image["file_id"]
 
     with connection.cursor() as cursor:
 
@@ -43,48 +32,63 @@ def create_category(data, user_id):
                 "data": {}
             }, status.HTTP_400_BAD_REQUEST
 
-        cursor.execute(
-            """
-            INSERT INTO categories
-            (
-                name,
-                description,
-                image_url,
-                imagekit_file_id,
-                is_active,
-                created_by,
-                updated_by,
-                created_at,
-                updated_at
-            )
-            VALUES
-            (
-                %s,
-                %s,
-                %s,
-                %s,
-                %s,
-                %s,
-                %s,
-                NOW(),
-                NOW()
-            )
-            RETURNING id
-            """,
-            [
-                name,
-                description,
-                image_url,
-                imagekit_file_id,
-                is_active,
-                user_id,
-                user_id
-            ]
+    # Upload only after the uniqueness check passes, so a rejected duplicate
+    # name never orphans an image in ImageKit.
+    image_url = None
+    imagekit_file_id = None
+
+    if image:
+        uploaded_image = upload_image_to_imagekit(
+            image=image,
+            folder="/categories"
         )
 
-        category_id = cursor.fetchone()[0]
+        image_url = uploaded_image["url"]
+        imagekit_file_id = uploaded_image["file_id"]
 
-        connection.commit()
+    with transaction.atomic():
+        with connection.cursor() as cursor:
+
+            cursor.execute(
+                """
+                INSERT INTO categories
+                (
+                    name,
+                    description,
+                    image_url,
+                    imagekit_file_id,
+                    is_active,
+                    created_by,
+                    updated_by,
+                    created_at,
+                    updated_at
+                )
+                VALUES
+                (
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    NOW(),
+                    NOW()
+                )
+                RETURNING id
+                """,
+                [
+                    name,
+                    description,
+                    image_url,
+                    imagekit_file_id,
+                    is_active,
+                    user_id,
+                    user_id
+                ]
+            )
+
+            category_id = cursor.fetchone()[0]
 
     category_data, _ = get_categories(
         page=1,
@@ -134,52 +138,52 @@ def get_categories(
         where_clause += " AND name ILIKE %s"
         params.append(f"%{search}%")
 
-    sql = f"""
-        SELECT {columns_str}
-        FROM categories
-        {where_clause}
-        ORDER BY created_at DESC
-    """
-
     with connection.cursor() as cursor:
 
-        cursor.execute(sql, params)
+        cursor.execute(f"SELECT COUNT(*) FROM categories {where_clause}", params)
 
-        rows = cursor.fetchall()
+        total_records = cursor.fetchone()[0]
 
-        if not rows:
+        if total_records == 0:
             return {
-                "message": "Data not found.",
-                "data": []
+                "message": "Category not found." if category_id else "Data not found.",
+                "data": {} if category_id else []
             }, (
                 status.HTTP_404_NOT_FOUND
                 if category_id
                 else status.HTTP_200_OK
             )
 
+        page, page_size, offset, pagination = resolve_pagination(page, page_size, total_records)
+
+        cursor.execute(
+            f"""
+            SELECT {columns_str}
+            FROM categories
+            {where_clause}
+            ORDER BY created_at DESC
+            LIMIT %s OFFSET %s
+            """,
+            params + [page_size, offset]
+        )
+
         result = [
             db_query_result_to_json(
                 row,
                 select_columns
             )
-            for row in rows
+            for row in cursor.fetchall()
         ]
-
-        paginated_list, pagination = paginate_queryset(
-            result,
-            page,
-            page_size
-        )
 
         if category_id:
             return {
                 "message": "Data fetched successfully.",
-                "data": paginated_list[0]
+                "data": result[0]
             }, status.HTTP_200_OK
 
         return {
             "message": "Data fetched successfully.",
-            "data": paginated_list,
+            "data": result,
             "pagination": pagination
         }, status.HTTP_200_OK
     
@@ -253,21 +257,22 @@ def update_category(data, user_id):
             set_parts.append(f"{field} = %s")
             values.append(data[field])
 
+    # Upload the replacement image (if any) before touching the DB, but don't
+    # delete the old one yet — if the DB update below fails, the old image
+    # must still be recoverable.
+    new_upload = None
+
     if image:
-
-        if old_file_id:
-            delete_image_from_imagekit(old_file_id)
-
-        uploaded = upload_image_to_imagekit(
+        new_upload = upload_image_to_imagekit(
             image=image,
             folder="/categories"
         )
 
         set_parts.append("image_url = %s")
-        values.append(uploaded["url"])
+        values.append(new_upload["url"])
 
         set_parts.append("imagekit_file_id = %s")
-        values.append(uploaded["file_id"])
+        values.append(new_upload["file_id"])
 
     if not set_parts:
         return {
@@ -289,17 +294,23 @@ def update_category(data, user_id):
         AND is_deleted = FALSE
     """
 
-    with connection.cursor() as cursor:
+    with transaction.atomic():
+        with connection.cursor() as cursor:
 
-        cursor.execute(sql, values)
+            cursor.execute(sql, values)
 
-        if cursor.rowcount == 0:
-            return {
-                "message": "Category not found.",
-                "data": {}
-            }, status.HTTP_404_NOT_FOUND
+            if cursor.rowcount == 0:
+                return {
+                    "message": "Category not found.",
+                    "data": {}
+                }, status.HTTP_404_NOT_FOUND
 
-        connection.commit()
+    # Only delete the old image once the new one is confirmed committed.
+    if new_upload and old_file_id:
+        try:
+            delete_image_from_imagekit(old_file_id)
+        except Exception:
+            traceback.print_exc()
 
     category_data, _ = get_categories(
         page=1,
@@ -321,51 +332,50 @@ def delete_category(category_id, user_id):
             "data": {}
         }, status.HTTP_400_BAD_REQUEST
 
-    with connection.cursor() as cursor:
+    with transaction.atomic():
+        with connection.cursor() as cursor:
 
-        cursor.execute(
-            """
-            SELECT imagekit_file_id
-            FROM categories
-            WHERE id = %s
-            AND is_deleted = FALSE
-            """,
-            [category_id]
-        )
+            cursor.execute(
+                """
+                SELECT imagekit_file_id
+                FROM categories
+                WHERE id = %s
+                AND is_deleted = FALSE
+                """,
+                [category_id]
+            )
 
-        row = cursor.fetchone()
+            row = cursor.fetchone()
 
-        if not row:
-            return {
-                "message": "Category not found.",
-                "data": {}
-            }, status.HTTP_404_NOT_FOUND
+            if not row:
+                return {
+                    "message": "Category not found.",
+                    "data": {}
+                }, status.HTTP_404_NOT_FOUND
 
-        imagekit_file_id = row[0]
+            imagekit_file_id = row[0]
 
-        cursor.execute(
-            """
-            UPDATE categories
-            SET
-                is_deleted = TRUE,
-                updated_by = %s,
-                updated_at = NOW()
-            WHERE id = %s
-            AND is_deleted = FALSE
-            """,
-            [
-                user_id,
-                category_id
-            ]
-        )
-
-        connection.commit()
+            cursor.execute(
+                """
+                UPDATE categories
+                SET
+                    is_deleted = TRUE,
+                    updated_by = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                AND is_deleted = FALSE
+                """,
+                [
+                    user_id,
+                    category_id
+                ]
+            )
 
     if imagekit_file_id:
         try:
             delete_image_from_imagekit(imagekit_file_id)
         except Exception:
-            pass
+            traceback.print_exc()
 
     return {
         "message": "Category deleted successfully.",
@@ -736,8 +746,8 @@ def get_product_listing(
     search=None,
     sort_by="latest"
 ):
-    page = max(int(page), 1)
-    page_size = max(int(page_size), 1)
+    page = clamp_page(page)
+    page_size = clamp_page_size(page_size, default=20)
     offset = (page - 1) * page_size
 
     # Base where conditions
@@ -823,6 +833,16 @@ def get_product_listing(
     }
     order_by = sort_mapping.get(sort_by, "p.created_at DESC")
 
+    # The true cheapest-variant price only matters for price-based sorting —
+    # for latest/oldest (the common case) this correlated subquery would run
+    # per row for a value nothing ever reads, so skip selecting it entirely.
+    needs_min_price = sort_by in ("price_low_to_high", "price_high_to_low")
+    min_price_select = (
+        """,
+            (SELECT MIN(selling_price) FROM public.product_variants WHERE product_id = p.id AND is_deleted = FALSE) as min_selling_price"""
+        if needs_min_price else ""
+    )
+
     count_sql = f"SELECT COUNT(*) FROM public.products p WHERE {where_clause}"
     with connection.cursor() as cursor:
         cursor.execute(count_sql, params)
@@ -850,13 +870,10 @@ def get_product_listing(
             
             -- Primary Image for thumbnail
             (
-                SELECT image_url FROM public.product_variant_images img 
+                SELECT image_url FROM public.product_variant_images img
                 WHERE img.variant_id = v.id AND img.is_deleted = FALSE AND img.is_active = TRUE
                 ORDER BY img.display_order ASC LIMIT 1
-            ) AS primary_image,
-            
-            -- Sort metric helper
-            (SELECT MIN(selling_price) FROM public.product_variants WHERE product_id = p.id AND is_deleted = FALSE) as min_selling_price
+            ) AS primary_image{min_price_select}
 
         FROM public.products p
         INNER JOIN public.categories c ON c.id = p.category_id AND c.is_deleted = FALSE
@@ -997,41 +1014,56 @@ def add_to_cart(validated_data, user_id):
     variant_size_id = validated_data["variant_size_id"]
     quantity = validated_data["quantity"]
 
-    with connection.cursor() as cursor:
-        cursor.execute("""
-            SELECT stock_quantity 
-            FROM public.product_variant_sizes 
-            WHERE id = %s AND is_active = TRUE AND is_deleted = FALSE
-        """, [variant_size_id])
-        
-        row = cursor.fetchone()
-        if not row:
-            return {"message": "Selected product size variant is unavailable."}, status.HTTP_404_NOT_FOUND
-        
-        available_stock = row[0]
-        if available_stock < quantity:
-            return {"message": f"Insufficient stock. Only {available_stock} items left."}, status.HTTP_400_BAD_REQUEST
-
-        cursor.execute("""
-            INSERT INTO public.cart_items (user_id, variant_size_id, quantity, created_by, updated_by)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (user_id, variant_size_id) 
-            DO UPDATE SET 
-                quantity = public.cart_items.quantity + EXCLUDED.quantity,
-                is_deleted = FALSE,
-                is_active = TRUE,
-                updated_at = CURRENT_TIMESTAMP,
-                updated_by = EXCLUDED.updated_by
-            RETURNING id, quantity;
-        """, [user_id, variant_size_id, quantity, user_id, user_id])
-        
-        cart_id, final_quantity = cursor.fetchone()
-
-        if final_quantity > available_stock:
+    with transaction.atomic():
+        with connection.cursor() as cursor:
             cursor.execute("""
-                UPDATE public.cart_items SET quantity = %s WHERE id = %s
-            """, [available_stock, cart_id])
-            return {"message": f"Cart adjusted to maximum available stock ({available_stock})."}, status.HTTP_200_OK
+                SELECT stock_quantity
+                FROM public.product_variant_sizes
+                WHERE id = %s AND is_active = TRUE AND is_deleted = FALSE
+                FOR UPDATE
+            """, [variant_size_id])
+
+            row = cursor.fetchone()
+            if not row:
+                return {"message": "Selected product size variant is unavailable."}, status.HTTP_404_NOT_FOUND
+
+            available_stock = row[0]
+            if available_stock < quantity:
+                return {"message": f"Insufficient stock. Only {available_stock} items left."}, status.HTTP_400_BAD_REQUEST
+
+            cursor.execute("""
+                INSERT INTO public.cart_items (user_id, variant_size_id, quantity, created_by, updated_by)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (user_id, variant_size_id)
+                DO UPDATE SET
+                    -- A row that was soft-deleted (e.g. cleared after a past
+                    -- purchase) is being revived as a brand-new cart line, so
+                    -- its old, stale quantity must not carry over — only an
+                    -- existing *active* line accumulates the added quantity.
+                    quantity = CASE
+                        WHEN public.cart_items.is_deleted THEN EXCLUDED.quantity
+                        ELSE public.cart_items.quantity + EXCLUDED.quantity
+                    END,
+                    is_deleted = FALSE,
+                    is_active = TRUE,
+                    updated_at = CURRENT_TIMESTAMP,
+                    updated_by = EXCLUDED.updated_by
+                RETURNING id, quantity;
+            """, [user_id, variant_size_id, quantity, user_id, user_id])
+
+            cart_id, final_quantity = cursor.fetchone()
+
+            if final_quantity > available_stock:
+                # Compare-and-set: only clamp if the row still holds the
+                # quantity we just computed, so a concurrent legitimate
+                # quantity change (e.g. update_cart_quantity) can't be
+                # silently overwritten by this correction.
+                cursor.execute("""
+                    UPDATE public.cart_items
+                    SET quantity = %s
+                    WHERE id = %s AND quantity = %s
+                """, [available_stock, cart_id, final_quantity])
+                return {"message": f"Cart adjusted to maximum available stock ({available_stock})."}, status.HTTP_200_OK
 
     return {"message": "Item added to cart successfully."}, status.HTTP_201_CREATED
 
@@ -1146,61 +1178,62 @@ def delete_cart_item(cart_item_id, user_id):
 
 
 def create_coupon(validated_data, user_id):
-    with connection.cursor() as cursor:
+    with transaction.atomic():
+        with connection.cursor() as cursor:
 
-        cursor.execute("""
-            SELECT id
-            FROM public.coupons
-            WHERE UPPER(code)=UPPER(%s)
-            AND is_deleted=FALSE;
-        """, [validated_data["code"]])
+            cursor.execute("""
+                SELECT id
+                FROM public.coupons
+                WHERE UPPER(code)=UPPER(%s)
+                AND is_deleted=FALSE;
+            """, [validated_data["code"]])
 
-        if cursor.fetchone():
-            return {
-                "message": "Coupon code already exists."
-            }, status.HTTP_400_BAD_REQUEST
+            if cursor.fetchone():
+                return {
+                    "message": "Coupon code already exists."
+                }, status.HTTP_400_BAD_REQUEST
 
-        cursor.execute("""
-            INSERT INTO public.coupons
-            (
-                code,
-                discount_type,
-                discount_value,
-                maximum_discount_amount,
-                minimum_order_amount,
-                start_date,
-                end_date,
-                max_usage,
-                max_usage_per_user,
-                description,
-                is_first_order_only,
-                created_by,
-                updated_by,
-                is_active
-            )
-            VALUES
-            (
-                %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
-            )
-            RETURNING id;
-        """, [
-            validated_data["code"],
-            validated_data["discount_type"],
-            validated_data["discount_value"],
-            validated_data.get("maximum_discount_amount"),
-            validated_data.get("minimum_order_amount", 0),
-            validated_data["start_date"],
-            validated_data["end_date"],
-            validated_data.get("max_usage"),
-            validated_data.get("max_usage_per_user", 1),
-            validated_data.get("description"),
-            validated_data.get("is_first_order_only", False),
-            user_id,
-            user_id,
-            validated_data.get("is_active", True)
-        ])
+            cursor.execute("""
+                INSERT INTO public.coupons
+                (
+                    code,
+                    discount_type,
+                    discount_value,
+                    maximum_discount_amount,
+                    minimum_order_amount,
+                    start_date,
+                    end_date,
+                    max_usage,
+                    max_usage_per_user,
+                    description,
+                    is_first_order_only,
+                    created_by,
+                    updated_by,
+                    is_active
+                )
+                VALUES
+                (
+                    %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
+                )
+                RETURNING id;
+            """, [
+                validated_data["code"],
+                validated_data["discount_type"],
+                validated_data["discount_value"],
+                validated_data.get("maximum_discount_amount"),
+                validated_data.get("minimum_order_amount", 0),
+                validated_data["start_date"],
+                validated_data["end_date"],
+                validated_data.get("max_usage"),
+                validated_data.get("max_usage_per_user", 1),
+                validated_data.get("description"),
+                validated_data.get("is_first_order_only", False),
+                user_id,
+                user_id,
+                validated_data.get("is_active", True)
+            ])
 
-        coupon_id = cursor.fetchone()[0]
+            coupon_id = cursor.fetchone()[0]
 
     return {
         "message": "Coupon created successfully.",
@@ -1212,77 +1245,107 @@ def create_coupon(validated_data, user_id):
 
 
 
-def get_coupons(user_id, coupon_id=None, coupon_code=None):
+# Internal-only operational fields hidden from non-admin (role 2) callers.
+_COUPON_ADMIN_ONLY_FIELDS = ("used_count", "max_usage", "max_usage_per_user")
 
-    sql = """
-        SELECT
-            id,
-            code,
-            discount_type,
-            discount_value,
-            maximum_discount_amount,
-            minimum_order_amount,
-            start_date,
-            end_date,
-            max_usage,
-            used_count,
-            max_usage_per_user,
-            description,
-            is_first_order_only,
-            is_active,
-            created_at
-        FROM public.coupons
-        WHERE is_deleted=FALSE
-    """
 
+_COUPON_SELECT_COLUMNS = [
+    "id",
+    "code",
+    "discount_type",
+    "discount_value",
+    "maximum_discount_amount",
+    "minimum_order_amount",
+    "start_date",
+    "end_date",
+    "max_usage",
+    "used_count",
+    "max_usage_per_user",
+    "description",
+    "is_first_order_only",
+    "is_active",
+    "created_at"
+]
+
+
+def _serialize_coupon_row(row, admin_view):
+    item = dict(zip(_COUPON_SELECT_COLUMNS, row))
+
+    item["discount_value"] = float(item["discount_value"])
+
+    if item["maximum_discount_amount"] is not None:
+        item["maximum_discount_amount"] = float(item["maximum_discount_amount"])
+
+    if item["minimum_order_amount"] is not None:
+        item["minimum_order_amount"] = float(item["minimum_order_amount"])
+
+    if not admin_view:
+        for field in _COUPON_ADMIN_ONLY_FIELDS:
+            item.pop(field, None)
+
+    return item
+
+
+def get_coupons(user_id, coupon_id=None, coupon_code=None, page=1, page_size=10, admin_view=True):
+
+    columns_str = ", ".join(_COUPON_SELECT_COLUMNS)
+
+    where_clause = "WHERE is_deleted=FALSE"
     params = []
 
+    if not admin_view:
+        # Non-admin callers only ever see coupons that are actually usable
+        # right now — not disabled, expired, or not yet started.
+        where_clause += " AND is_active = TRUE AND CURRENT_DATE BETWEEN start_date AND end_date"
+
     if coupon_id:
-        sql += " AND id=%s"
+        where_clause += " AND id=%s"
         params.append(coupon_id)
 
     if coupon_code:
-        sql += " AND UPPER(code)=UPPER(%s)"
+        where_clause += " AND UPPER(code)=UPPER(%s)"
         params.append(coupon_code)
-
-    sql += " ORDER BY created_at DESC"
-
-    with connection.cursor() as cursor:
-        cursor.execute(sql, params)
-
-        columns = [col[0] for col in cursor.description]
-        rows = cursor.fetchall()
-
-    data = []
-
-    for row in rows:
-        item = dict(zip(columns, row))
-
-        item["discount_value"] = float(item["discount_value"])
-
-        if item["maximum_discount_amount"] is not None:
-            item["maximum_discount_amount"] = float(item["maximum_discount_amount"])
-
-        if item["minimum_order_amount"] is not None:
-            item["minimum_order_amount"] = float(item["minimum_order_amount"])
-
-        data.append(item)
 
     if coupon_id or coupon_code:
 
-        if not data:
+        with connection.cursor() as cursor:
+            cursor.execute(f"SELECT {columns_str} FROM public.coupons {where_clause}", params)
+            row = cursor.fetchone()
+
+        if not row:
             return {
                 "message": "Coupon not found."
             }, status.HTTP_404_NOT_FOUND
 
         return {
             "message": "Coupon retrieved successfully.",
-            "data": data[0]
+            "data": _serialize_coupon_row(row, admin_view)
         }, status.HTTP_200_OK
+
+    with connection.cursor() as cursor:
+        cursor.execute(f"SELECT COUNT(*) FROM public.coupons {where_clause}", params)
+        total_records = cursor.fetchone()[0]
+
+        page, page_size, offset, pagination = resolve_pagination(page, page_size, total_records)
+
+        cursor.execute(
+            f"""
+            SELECT {columns_str}
+            FROM public.coupons
+            {where_clause}
+            ORDER BY created_at DESC
+            LIMIT %s OFFSET %s
+            """,
+            params + [page_size, offset]
+        )
+        rows = cursor.fetchall()
+
+    data = [_serialize_coupon_row(row, admin_view) for row in rows]
 
     return {
         "message": "Coupons retrieved successfully.",
-        "data": data
+        "data": data,
+        "pagination": pagination
     }, status.HTTP_200_OK
 
 
@@ -1292,70 +1355,71 @@ def update_coupon(validated_data, user_id):
 
     coupon_id = validated_data["id"]
 
-    with connection.cursor() as cursor:
+    with transaction.atomic():
+        with connection.cursor() as cursor:
 
-        cursor.execute("""
-            SELECT id
-            FROM public.coupons
-            WHERE id=%s
-            AND is_deleted=FALSE;
-        """, [coupon_id])
+            cursor.execute("""
+                SELECT id
+                FROM public.coupons
+                WHERE id=%s
+                AND is_deleted=FALSE;
+            """, [coupon_id])
 
-        if not cursor.fetchone():
-            return {
-                "message": "Coupon not found."
-            }, status.HTTP_404_NOT_FOUND
+            if not cursor.fetchone():
+                return {
+                    "message": "Coupon not found."
+                }, status.HTTP_404_NOT_FOUND
 
-        cursor.execute("""
-            SELECT id
-            FROM public.coupons
-            WHERE UPPER(code)=UPPER(%s)
-            AND id<>%s
-            AND is_deleted=FALSE;
-        """, [
-            validated_data["code"],
-            coupon_id
-        ])
+            cursor.execute("""
+                SELECT id
+                FROM public.coupons
+                WHERE UPPER(code)=UPPER(%s)
+                AND id<>%s
+                AND is_deleted=FALSE;
+            """, [
+                validated_data["code"],
+                coupon_id
+            ])
 
-        if cursor.fetchone():
-            return {
-                "message": "Coupon code already exists."
-            }, status.HTTP_400_BAD_REQUEST
+            if cursor.fetchone():
+                return {
+                    "message": "Coupon code already exists."
+                }, status.HTTP_400_BAD_REQUEST
 
-        cursor.execute("""
-            UPDATE public.coupons
-            SET
-                code=%s,
-                discount_type=%s,
-                discount_value=%s,
-                maximum_discount_amount=%s,
-                minimum_order_amount=%s,
-                start_date=%s,
-                end_date=%s,
-                max_usage=%s,
-                max_usage_per_user=%s,
-                description=%s,
-                is_first_order_only=%s,
-                is_active=%s,
-                updated_at=CURRENT_TIMESTAMP,
-                updated_by=%s
-            WHERE id=%s;
-        """, [
-            validated_data["code"],
-            validated_data["discount_type"],
-            validated_data["discount_value"],
-            validated_data.get("maximum_discount_amount"),
-            validated_data.get("minimum_order_amount"),
-            validated_data["start_date"],
-            validated_data["end_date"],
-            validated_data.get("max_usage"),
-            validated_data.get("max_usage_per_user"),
-            validated_data.get("description"),
-            validated_data.get("is_first_order_only"),
-            validated_data.get("is_active"),
-            user_id,
-            coupon_id
-        ])
+            cursor.execute("""
+                UPDATE public.coupons
+                SET
+                    code=%s,
+                    discount_type=%s,
+                    discount_value=%s,
+                    maximum_discount_amount=%s,
+                    minimum_order_amount=%s,
+                    start_date=%s,
+                    end_date=%s,
+                    max_usage=%s,
+                    max_usage_per_user=%s,
+                    description=%s,
+                    is_first_order_only=%s,
+                    is_active=%s,
+                    updated_at=CURRENT_TIMESTAMP,
+                    updated_by=%s
+                WHERE id=%s;
+            """, [
+                validated_data["code"],
+                validated_data["discount_type"],
+                validated_data["discount_value"],
+                validated_data.get("maximum_discount_amount"),
+                validated_data.get("minimum_order_amount"),
+                validated_data["start_date"],
+                validated_data["end_date"],
+                validated_data.get("max_usage"),
+                validated_data.get("max_usage_per_user"),
+                validated_data.get("description"),
+                validated_data.get("is_first_order_only"),
+                validated_data.get("is_active"),
+                user_id,
+                coupon_id
+            ])
 
     return {
         "message": "Coupon updated successfully."
@@ -1405,8 +1469,8 @@ def get_order_listing(
     order_type=None
 ):
 
-    page = max(int(page), 1)
-    page_size = max(int(page_size), 1)
+    page = clamp_page(page)
+    page_size = clamp_page_size(page_size, default=10)
     offset = (page - 1) * page_size
 
     where_conditions = [
@@ -2540,6 +2604,14 @@ def create_product(data, user_id):
 #     }, status.HTTP_201_CREATED
 
 
+class _ProductUpdateAborted(Exception):
+    """Raised to unwind update_product's transaction.atomic() block with a specific response."""
+
+    def __init__(self, payload, status_code):
+        self.payload = payload
+        self.status_code = status_code
+
+
 def update_product(data, user_id):
 
     product_id = data.get("id")
@@ -2567,9 +2639,9 @@ def update_product(data, user_id):
     delete_variant_ids = data.get("delete_variant_ids", [])
     delete_size_ids = data.get("delete_size_ids", [])
 
-    with connection.cursor() as cursor:
+    try:
 
-        try:
+        with transaction.atomic(), connection.cursor() as cursor:
 
             cursor.execute(
                 """
@@ -2582,10 +2654,10 @@ def update_product(data, user_id):
             )
 
             if not cursor.fetchone():
-                return {
+                raise _ProductUpdateAborted({
                     "message": "Product not found.",
                     "data": {}
-                }, status.HTTP_404_NOT_FOUND
+                }, status.HTTP_404_NOT_FOUND)
 
 
             cursor.execute(
@@ -2600,10 +2672,10 @@ def update_product(data, user_id):
             )
 
             if cursor.fetchone():
-                return {
+                raise _ProductUpdateAborted({
                     "message": "Product already exists.",
                     "data": {}
-                }, status.HTTP_400_BAD_REQUEST
+                }, status.HTTP_400_BAD_REQUEST)
 
             # --------------------------------------------------
             # Category Validation
@@ -2621,10 +2693,10 @@ def update_product(data, user_id):
             )
 
             if not cursor.fetchone():
-                return {
+                raise _ProductUpdateAborted({
                     "message": "Category not found.",
                     "data": {}
-                }, status.HTTP_404_NOT_FOUND
+                }, status.HTTP_404_NOT_FOUND)
 
             # --------------------------------------------------
             # Sub Category Validation
@@ -2648,10 +2720,10 @@ def update_product(data, user_id):
                 )
 
                 if not cursor.fetchone():
-                    return {
+                    raise _ProductUpdateAborted({
                         "message": "Sub category not found.",
                         "data": {}
-                    }, status.HTTP_404_NOT_FOUND
+                    }, status.HTTP_404_NOT_FOUND)
 
             # --------------------------------------------------
             # Tag Validation
@@ -2682,12 +2754,12 @@ def update_product(data, user_id):
                 ]
 
                 if invalid_tags:
-                    return {
+                    raise _ProductUpdateAborted({
                         "message": "Invalid tag ids.",
                         "data": {
                             "invalid_tag_ids": invalid_tags
                         }
-                    }, status.HTTP_400_BAD_REQUEST
+                    }, status.HTTP_400_BAD_REQUEST)
 
             # --------------------------------------------------
             # Variant Ownership Validation
@@ -2724,12 +2796,12 @@ def update_product(data, user_id):
                 ]
 
                 if invalid_variant_ids:
-                    return {
+                    raise _ProductUpdateAborted({
                         "message": "Invalid variant ids.",
                         "data": {
                             "invalid_variant_ids": invalid_variant_ids
                         }
-                    }, status.HTTP_400_BAD_REQUEST
+                    }, status.HTTP_400_BAD_REQUEST)
 
             if delete_variant_ids:
 
@@ -2756,13 +2828,13 @@ def update_product(data, user_id):
                 ]
 
                 if invalid_delete_variant_ids:
-                    return {
+                    raise _ProductUpdateAborted({
                         "message": "Invalid delete variant ids.",
                         "data": {
                             "invalid_variant_ids": invalid_delete_variant_ids
                         }
-                    }, status.HTTP_400_BAD_REQUEST
-            
+                    }, status.HTTP_400_BAD_REQUEST)
+
 
             if delete_size_ids:
 
@@ -2789,32 +2861,15 @@ def update_product(data, user_id):
                 ]
 
                 if invalid_size_ids:
-                    return {
+                    raise _ProductUpdateAborted({
                         "message": "Invalid delete size ids.",
                         "data": {
                             "invalid_size_ids": invalid_size_ids
                         }
-                    }, status.HTTP_400_BAD_REQUEST
+                    }, status.HTTP_400_BAD_REQUEST)
             # --------------------------------------------------
             # SKU Validation
             # --------------------------------------------------
-
-            if delete_size_ids:
-
-                cursor.execute("""
-                    UPDATE product_variant_sizes
-                    SET
-                        is_deleted = TRUE,
-                        is_active = FALSE,
-                        updated_by = %s,
-                        updated_at = NOW()
-                    WHERE id = ANY(%s)
-                    AND is_deleted = FALSE
-                """, [
-                    user_id,
-                    delete_size_ids
-                ])
-
 
             sku_list = [
                 variant["sku"]
@@ -2847,12 +2902,28 @@ def update_product(data, user_id):
                 ]
 
                 if existing_skus:
-                    return {
+                    raise _ProductUpdateAborted({
                         "message": "SKU already exists.",
                         "data": {
                             "existing_skus": existing_skus
                         }
-                    }, status.HTTP_400_BAD_REQUEST
+                    }, status.HTTP_400_BAD_REQUEST)
+
+            if delete_size_ids:
+
+                cursor.execute("""
+                    UPDATE product_variant_sizes
+                    SET
+                        is_deleted = TRUE,
+                        is_active = FALSE,
+                        updated_by = %s,
+                        updated_at = NOW()
+                    WHERE id = ANY(%s)
+                    AND is_deleted = FALSE
+                """, [
+                    user_id,
+                    delete_size_ids
+                ])
 
             # --------------------------------------------------
             # Update Product
@@ -3168,13 +3239,12 @@ def update_product(data, user_id):
                     ]
 
                     if invalid_size_ids:
-                        connection.rollback()
-                        return {
+                        raise _ProductUpdateAborted({
                             "message": "Invalid size ids.",
                             "data": {
                                 "invalid_size_ids": invalid_size_ids
                             }
-                        }, status.HTTP_400_BAD_REQUEST
+                        }, status.HTTP_400_BAD_REQUEST)
 
                 for size in sizes:
 
@@ -3262,11 +3332,8 @@ def update_product(data, user_id):
                             ]
                         )
 
-            connection.commit()
-
-        except Exception:
-            connection.rollback()
-            raise
+    except _ProductUpdateAborted as e:
+        return e.payload, e.status_code
 
     for size_id in restocked_size_ids:
         notify_users_for_restock(size_id)
@@ -3289,9 +3356,7 @@ def delete_product(product_id, user_id):
             "data": {}
         }, status.HTTP_400_BAD_REQUEST
 
-    with connection.cursor() as cursor:
-
-        try:
+    with transaction.atomic(), connection.cursor() as cursor:
 
             # --------------------------------------------------
             # Product Existence Validation
@@ -3421,12 +3486,6 @@ def delete_product(product_id, user_id):
                     [user_id, variant_ids]
                 )
 
-            connection.commit()
-
-        except Exception:
-            connection.rollback()
-            raise
-
     return {
         "message": "Product deleted successfully.",
         "data": {}
@@ -3455,82 +3514,85 @@ ADDRESS_COLUMNS = [
 
 def create_address(data, user_id):
 
-    with connection.cursor() as cursor:
+    with transaction.atomic():
+        with connection.cursor() as cursor:
 
-        cursor.execute(
-            """
-            SELECT COUNT(*)
-            FROM addresses
-            WHERE user_id = %s
-            AND is_deleted = FALSE
-            """,
-            [user_id]
-        )
-
-        is_first_address = cursor.fetchone()[0] == 0
-
-        is_default = is_first_address or data.get("is_default", False)
-
-        if is_default:
+            # Lock this user's existing address rows for the rest of the
+            # transaction so a concurrent create/update/delete for the same
+            # user can't race the default-address bookkeeping below.
             cursor.execute(
                 """
-                UPDATE addresses
-                SET is_default = FALSE
+                SELECT id
+                FROM addresses
                 WHERE user_id = %s
                 AND is_deleted = FALSE
-                AND is_default = TRUE
+                FOR UPDATE
                 """,
                 [user_id]
             )
 
-        cursor.execute(
-            """
-            INSERT INTO addresses
-            (
-                user_id,
-                full_name,
-                mobile,
-                address_line_1,
-                address_line_2,
-                landmark,
-                city,
-                state,
-                country,
-                pincode,
-                address_type,
-                is_default,
-                created_by,
-                updated_by,
-                created_at,
-                updated_at
-            )
-            VALUES
-            (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW()
-            )
-            RETURNING id
-            """,
-            [
-                user_id,
-                data.get("full_name"),
-                data.get("mobile"),
-                data.get("address_line_1"),
-                data.get("address_line_2"),
-                data.get("landmark"),
-                data.get("city"),
-                data.get("state"),
-                data.get("country", "India"),
-                data.get("pincode"),
-                data.get("address_type", "Home"),
-                is_default,
-                user_id,
-                user_id
-            ]
-        )
+            is_first_address = len(cursor.fetchall()) == 0
 
-        address_id = cursor.fetchone()[0]
+            is_default = is_first_address or data.get("is_default", False)
 
-        connection.commit()
+            if is_default:
+                cursor.execute(
+                    """
+                    UPDATE addresses
+                    SET is_default = FALSE
+                    WHERE user_id = %s
+                    AND is_deleted = FALSE
+                    AND is_default = TRUE
+                    """,
+                    [user_id]
+                )
+
+            cursor.execute(
+                """
+                INSERT INTO addresses
+                (
+                    user_id,
+                    full_name,
+                    mobile,
+                    address_line_1,
+                    address_line_2,
+                    landmark,
+                    city,
+                    state,
+                    country,
+                    pincode,
+                    address_type,
+                    is_default,
+                    created_by,
+                    updated_by,
+                    created_at,
+                    updated_at
+                )
+                VALUES
+                (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW()
+                )
+                RETURNING id
+                """,
+                [
+                    user_id,
+                    data.get("full_name"),
+                    data.get("mobile"),
+                    data.get("address_line_1"),
+                    data.get("address_line_2"),
+                    data.get("landmark"),
+                    data.get("city"),
+                    data.get("state"),
+                    data.get("country", "India"),
+                    data.get("pincode"),
+                    data.get("address_type", "Home"),
+                    is_default,
+                    user_id,
+                    user_id
+                ]
+            )
+
+            address_id = cursor.fetchone()[0]
 
     address_data, _ = get_addresses(
         user_id=user_id,
@@ -3614,82 +3676,82 @@ def update_address(data, user_id):
         "address_type"
     ]
 
-    with connection.cursor() as cursor:
+    with transaction.atomic():
+        with connection.cursor() as cursor:
 
-        cursor.execute(
+            cursor.execute(
+                """
+                SELECT id
+                FROM addresses
+                WHERE user_id = %s
+                AND is_deleted = FALSE
+                FOR UPDATE
+                """,
+                [user_id]
+            )
+
+            owned_address_ids = {row[0] for row in cursor.fetchall()}
+
+            if address_id not in owned_address_ids:
+                return {
+                    "message": "Address not found.",
+                    "data": {}
+                }, status.HTTP_404_NOT_FOUND
+
+            set_parts = []
+            values = []
+
+            for field in updatable_fields:
+                if field in data:
+                    set_parts.append(f"{field} = %s")
+                    values.append(data[field])
+
+            if "is_default" in data:
+
+                if data["is_default"]:
+
+                    cursor.execute(
+                        """
+                        UPDATE addresses
+                        SET is_default = FALSE
+                        WHERE user_id = %s
+                        AND is_deleted = FALSE
+                        AND is_default = TRUE
+                        AND id <> %s
+                        """,
+                        [user_id, address_id]
+                    )
+
+                    set_parts.append("is_default = %s")
+                    values.append(True)
+
+                else:
+                    set_parts.append("is_default = %s")
+                    values.append(False)
+
+            if not set_parts:
+                return {
+                    "message": "No fields to update.",
+                    "data": {}
+                }, status.HTTP_400_BAD_REQUEST
+
+            set_parts.append("updated_by = %s")
+            values.append(user_id)
+
+            set_parts.append("updated_at = NOW()")
+
+            values.append(address_id)
+            values.append(user_id)
+
+            sql = f"""
+                UPDATE addresses
+                SET {', '.join(set_parts)}
+                WHERE id = %s
+                AND user_id = %s
+                AND is_deleted = FALSE
             """
-            SELECT id
-            FROM addresses
-            WHERE id = %s
-            AND user_id = %s
-            AND is_deleted = FALSE
-            """,
-            [address_id, user_id]
-        )
 
-        if not cursor.fetchone():
-            return {
-                "message": "Address not found.",
-                "data": {}
-            }, status.HTTP_404_NOT_FOUND
-
-    set_parts = []
-    values = []
-
-    for field in updatable_fields:
-        if field in data:
-            set_parts.append(f"{field} = %s")
-            values.append(data[field])
-
-    if "is_default" in data:
-
-        if data["is_default"]:
-
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    UPDATE addresses
-                    SET is_default = FALSE
-                    WHERE user_id = %s
-                    AND is_deleted = FALSE
-                    AND is_default = TRUE
-                    AND id <> %s
-                    """,
-                    [user_id, address_id]
-                )
-
-            set_parts.append("is_default = %s")
-            values.append(True)
-
-        else:
-            set_parts.append("is_default = %s")
-            values.append(False)
-
-    if not set_parts:
-        return {
-            "message": "No fields to update.",
-            "data": {}
-        }, status.HTTP_400_BAD_REQUEST
-
-    set_parts.append("updated_by = %s")
-    values.append(user_id)
-
-    set_parts.append("updated_at = NOW()")
-
-    values.append(address_id)
-    values.append(user_id)
-
-    sql = f"""
-        UPDATE addresses
-        SET {', '.join(set_parts)}
-        WHERE id = %s
-        AND user_id = %s
-        AND is_deleted = FALSE
-    """
-
-    with connection.cursor() as cursor:
-        cursor.execute(sql, values)
-        connection.commit()
+            cursor.execute(sql, values)
 
     address_data, _ = get_addresses(
         user_id=user_id,
@@ -3711,62 +3773,61 @@ def delete_address(address_id, user_id):
             "data": {}
         }, status.HTTP_400_BAD_REQUEST
 
-    with connection.cursor() as cursor:
-
-        cursor.execute(
-            """
-            SELECT is_default
-            FROM addresses
-            WHERE id = %s
-            AND user_id = %s
-            AND is_deleted = FALSE
-            """,
-            [address_id, user_id]
-        )
-
-        row = cursor.fetchone()
-
-        if not row:
-            return {
-                "message": "Address not found.",
-                "data": {}
-            }, status.HTTP_404_NOT_FOUND
-
-        was_default = row[0]
-
-        cursor.execute(
-            """
-            UPDATE addresses
-            SET
-                is_deleted = TRUE,
-                is_default = FALSE,
-                updated_by = %s,
-                updated_at = NOW()
-            WHERE id = %s
-            AND user_id = %s
-            """,
-            [user_id, address_id, user_id]
-        )
-
-        if was_default:
+    with transaction.atomic():
+        with connection.cursor() as cursor:
 
             cursor.execute(
                 """
-                UPDATE addresses
-                SET is_default = TRUE
-                WHERE id = (
-                    SELECT id
-                    FROM addresses
-                    WHERE user_id = %s
-                    AND is_deleted = FALSE
-                    ORDER BY created_at DESC
-                    LIMIT 1
-                )
+                SELECT id, is_default
+                FROM addresses
+                WHERE user_id = %s
+                AND is_deleted = FALSE
+                FOR UPDATE
                 """,
                 [user_id]
             )
 
-        connection.commit()
+            owned_addresses = {row[0]: row[1] for row in cursor.fetchall()}
+
+            if address_id not in owned_addresses:
+                return {
+                    "message": "Address not found.",
+                    "data": {}
+                }, status.HTTP_404_NOT_FOUND
+
+            was_default = owned_addresses[address_id]
+
+            cursor.execute(
+                """
+                UPDATE addresses
+                SET
+                    is_deleted = TRUE,
+                    is_default = FALSE,
+                    updated_by = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                AND user_id = %s
+                """,
+                [user_id, address_id, user_id]
+            )
+
+            if was_default:
+
+                cursor.execute(
+                    """
+                    UPDATE addresses
+                    SET is_default = TRUE
+                    WHERE id = (
+                        SELECT id
+                        FROM addresses
+                        WHERE user_id = %s
+                        AND is_deleted = FALSE
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                    )
+                    """,
+                    [user_id]
+                )
 
     return {
         "message": "Address deleted successfully.",
@@ -3775,12 +3836,29 @@ def delete_address(address_id, user_id):
 
 
 
-def create_notify_me_request(validated_data, user_id=None):
+def create_notify_me_request(validated_data, user_id):
 
     variant_size_id = validated_data["variant_size_id"]
-    email = validated_data["email"].strip().lower()
 
     with connection.cursor() as cursor:
+
+        # The subscription always uses the authenticated account's own,
+        # verified email — never a client-supplied address — so this can't
+        # be used to queue restock spam to arbitrary third-party inboxes.
+        cursor.execute(
+            "SELECT email FROM users WHERE id = %s AND is_deleted = FALSE",
+            [user_id]
+        )
+
+        user_row = cursor.fetchone()
+
+        if not user_row:
+            return {
+                "message": "User not found.",
+                "data": {}
+            }, status.HTTP_404_NOT_FOUND
+
+        email = user_row[0].strip().lower()
 
         cursor.execute(
             """
@@ -3873,10 +3951,13 @@ def create_notify_me_request(validated_data, user_id=None):
 
 
 
-def get_notify_me_requests(variant_size_id=None, page=1, page_size=10):
+_NOTIFY_ME_SELECT_COLUMNS = [
+    "id", "variant_size_id", "email", "user_id", "created_at",
+    "size", "stock_quantity", "color", "product_id", "product_name"
+]
 
-    page = max(int(page), 1)
-    page_size = max(int(page_size), 1)
+
+def get_notify_me_requests(variant_size_id=None, page=1, page_size=10, user_id=None):
 
     where_conditions = [
         "n.is_deleted = FALSE",
@@ -3885,85 +3966,100 @@ def get_notify_me_requests(variant_size_id=None, page=1, page_size=10):
 
     params = []
 
+    # Regular users only ever see their own subscriptions; passing user_id=None
+    # (admin callers) returns the site-wide list, optionally filtered by size.
+    if user_id is not None:
+        where_conditions.append("n.user_id = %s")
+        params.append(user_id)
+
     if variant_size_id:
         where_conditions.append("n.variant_size_id = %s")
         params.append(variant_size_id)
 
     where_clause = " AND ".join(where_conditions)
 
-    sql = f"""
-        SELECT
-            n.id,
-            n.variant_size_id,
-            n.email,
-            n.user_id,
-            n.created_at,
-            pvs.size,
-            pvs.stock_quantity,
-            v.color,
-            p.id AS product_id,
-            p.name AS product_name
+    joins = """
         FROM notify_me_requests n
         INNER JOIN product_variant_sizes pvs ON pvs.id = n.variant_size_id
         INNER JOIN product_variants v ON v.id = pvs.variant_id
         INNER JOIN products p ON p.id = v.product_id
-        WHERE {where_clause}
-        ORDER BY n.created_at DESC
     """
 
     with connection.cursor() as cursor:
 
-        cursor.execute(sql, params)
+        cursor.execute(f"SELECT COUNT(*) {joins} WHERE {where_clause}", params)
 
-        rows = cursor.fetchall()
+        total_records = cursor.fetchone()[0]
 
-        if not rows:
+        if total_records == 0:
             return {
                 "message": "Data not found.",
                 "data": []
             }, status.HTTP_200_OK
 
-        columns = [col[0] for col in cursor.description]
+        page, page_size, offset, pagination = resolve_pagination(page, page_size, total_records)
 
-        result = db_query_result_to_json(rows, columns)
-
-        paginated_list, pagination = paginate_queryset(
-            result,
-            page,
-            page_size
+        cursor.execute(
+            f"""
+            SELECT
+                n.id,
+                n.variant_size_id,
+                n.email,
+                n.user_id,
+                n.created_at,
+                pvs.size,
+                pvs.stock_quantity,
+                v.color,
+                p.id AS product_id,
+                p.name AS product_name
+            {joins}
+            WHERE {where_clause}
+            ORDER BY n.created_at DESC
+            LIMIT %s OFFSET %s
+            """,
+            params + [page_size, offset]
         )
+
+        result = db_query_result_to_json(cursor.fetchall(), _NOTIFY_ME_SELECT_COLUMNS)
 
     return {
         "message": "Data fetched successfully.",
-        "data": paginated_list,
+        "data": result,
         "pagination": pagination
     }, status.HTTP_200_OK
 
 
 
-def delete_notify_me_request(notify_me_id, email):
+def delete_notify_me_request(notify_me_id, user_id=None):
 
-    if not notify_me_id or not email:
+    if not notify_me_id:
         return {
-            "message": "id and email are required.",
+            "message": "id is required.",
             "data": {}
         }, status.HTTP_400_BAD_REQUEST
+
+    # Regular users may only cancel their own subscription (user_id is
+    # required to match); admins (user_id=None) may cancel any by id.
+    where_clause = "WHERE id = %s AND is_deleted = FALSE"
+    params = [notify_me_id]
+
+    if user_id is not None:
+        where_clause += " AND user_id = %s"
+        params.append(user_id)
 
     with connection.cursor() as cursor:
 
         cursor.execute(
-            """
+            f"""
             UPDATE notify_me_requests
             SET
                 is_deleted = TRUE,
                 is_active = FALSE,
                 updated_at = NOW()
-            WHERE id = %s
-            AND LOWER(email) = LOWER(%s)
-            AND is_deleted = FALSE
+            {where_clause}
             RETURNING id
             """,
-            [notify_me_id, email.strip()]
+            params
         )
 
         if not cursor.fetchone():

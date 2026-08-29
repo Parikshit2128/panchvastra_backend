@@ -34,29 +34,34 @@ class CouponSerializer(serializers.Serializer):
     )
     discount_value = serializers.DecimalField(
         max_digits=10,
-        decimal_places=2
+        decimal_places=2,
+        min_value=0
     )
     maximum_discount_amount = serializers.DecimalField(
         max_digits=10,
         decimal_places=2,
         required=False,
-        allow_null=True
+        allow_null=True,
+        min_value=0
     )
     minimum_order_amount = serializers.DecimalField(
         max_digits=10,
         decimal_places=2,
         required=False,
-        default=0
+        default=0,
+        min_value=0
     )
     start_date = serializers.DateTimeField()
     end_date = serializers.DateTimeField()
     max_usage = serializers.IntegerField(
         required=False,
-        allow_null=True
+        allow_null=True,
+        min_value=1
     )
     max_usage_per_user = serializers.IntegerField(
         required=False,
-        default=1
+        default=1,
+        min_value=1
     )
     description = serializers.CharField(
         required=False,
@@ -71,6 +76,19 @@ class CouponSerializer(serializers.Serializer):
         required=False,
         default=True
     )
+
+    def validate(self, attrs):
+        if attrs["discount_type"] == "PERCENTAGE" and attrs["discount_value"] > 100:
+            raise serializers.ValidationError(
+                {"discount_value": "A percentage discount cannot exceed 100."}
+            )
+
+        if attrs["end_date"] < attrs["start_date"]:
+            raise serializers.ValidationError(
+                {"end_date": "End date cannot be before the start date."}
+            )
+
+        return attrs
 
 
 class UpdateCouponSerializer(CouponSerializer):
@@ -186,7 +204,7 @@ class CreateProductSerializer(serializers.Serializer):
     )
 
     variants = ProductVariantSerializer(
-        many=True, required=False, allow_empty=False
+        many=True, required=True, allow_empty=False
     )
 
     
@@ -223,12 +241,18 @@ class UpdateAddressSerializer(serializers.Serializer):
 
 class NotifyMeSerializer(serializers.Serializer):
     variant_size_id = serializers.IntegerField(required=True)
-    email = serializers.EmailField(required=True)
 
 
 class UpdateProductSerializer(CreateProductSerializer):
 
     id = serializers.IntegerField()
+
+    # Unlike create, an update may legitimately touch nothing about variants
+    # (e.g. just renaming the product), so this loosens the base class's
+    # required=True back down for updates only.
+    variants = ProductVariantSerializer(
+        many=True, required=False, default=list
+    )
 
     delete_tag_ids = serializers.ListField(
         child=serializers.IntegerField(),

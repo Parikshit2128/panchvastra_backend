@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Panchvastra - ₹1 Razorpay LIVE Payment</title>
+<style>
+  body { font-family: Arial, sans-serif; max-width: 560px; margin: 40px auto; padding: 0 20px; color: #222; }
+  h2 { margin-bottom: 4px; }
+  .muted { color: #666; font-size: 14px; }
+  .live-banner { background: #fff3cd; border: 1px solid #ffe08a; color: #7a5b00; padding: 10px 14px; border-radius: 6px; font-size: 14px; margin: 16px 0; }
+  table { border-collapse: collapse; width: 100%; margin: 20px 0; }
+  td { padding: 6px 8px; border-bottom: 1px solid #eee; font-size: 14px; }
+  td:first-child { color: #666; width: 160px; }
+  button { background: #b02a37; color: #fff; border: none; padding: 12px 24px; font-size: 16px; border-radius: 6px; cursor: pointer; }
+  button:disabled { background: #aaa; cursor: not-allowed; }
+  #result { margin-top: 20px; padding: 14px; border-radius: 6px; font-size: 14px; white-space: pre-wrap; display: none; }
+  .ok { background: #e6f7ec; color: #1e7e34; border: 1px solid #b7e4c7; }
+  .err { background: #fdecea; color: #b02a37; border: 1px solid #f5c2c7; }
+  .hint { font-size: 13px; color: #666; margin-top: 24px; border-top: 1px solid #eee; padding-top: 12px; }
+</style>
+</head>
+<body>
+
+<h2>Panchvastra — ₹1 LIVE Payment</h2>
+<p class="muted">Test Product - Rs 1 (SKU TEST-RS1-001) · Razorpay LIVE mode</p>
+
+<div class="live-banner">
+  ⚠️ This is <b>live mode</b>. Completing this will make a <b>real ₹1 charge</b>
+  on whatever real card / UPI you use. No test cards will work here.
+</div>
+
+<table>
+  <tr><td>Internal order_id</td><td>23</td></tr>
+  <tr><td>Razorpay order_id</td><td>order_TVh4y6O933Iorz</td></tr>
+  <tr><td>Amount</td><td>₹1.00 (100 paise)</td></tr>
+  <tr><td>Key</td><td>rzp_live_TVfb3secVKeWrU</td></tr>
+</table>
+
+<button id="payBtn">Pay ₹1 (LIVE)</button>
+
+<div id="result"></div>
+
+<div class="hint">
+  Use a real card or real UPI id — this hits Razorpay's live environment.
+</div>
+
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+<script>
+  var JWT = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjo1LCJ1c2VyX3JvbGVfaWQiOjIsImV4cCI6MTc4OTMxOTI4Mn0.X6kyPwvCAMqLY52ElCql9L3x9upXDo4I-XXlOQq80so";
+
+  function showResult(ok, text) {
+    var el = document.getElementById("result");
+    el.style.display = "block";
+    el.className = ok ? "ok" : "err";
+    el.textContent = text;
+  }
+
+  document.getElementById("payBtn").addEventListener("click", function () {
+    var options = {
+      key: "rzp_live_TVfb3secVKeWrU",
+      amount: 100,
+      currency: "INR",
+      name: "Panchvastra",
+      description: "Test Product - Rs 1",
+      order_id: "order_TVh4y6O933Iorz",
+      prefill: {
+        name: "Test User",
+        email: "testbugfix_verify@example.com",
+        contact: "9999999999"
+      },
+      theme: { color: "#b02a37" },
+      handler: function (response) {
+        // This fires only after Razorpay confirms success client-side.
+        // We still must call our own verify_payment_api — it independently
+        // re-derives the HMAC signature server-side before trusting anything.
+        // Relative path so it always targets whatever origin this page was
+        // actually loaded from (no cross-origin mismatch / CORS block).
+        fetch("/v1/verify_payment_api/", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + JWT
+          },
+          body: JSON.stringify({
+            razorpay_order_id: response.razorpay_order_id,
+            razorpay_payment_id: response.razorpay_payment_id,
+            razorpay_signature: response.razorpay_signature
+          })
+        })
+          .then(function (r) { return r.json().then(function (body) { return { status: r.status, body: body }; }); })
+          .then(function (res) {
+            showResult(
+              res.status === 200,
+              "verify_payment_api -> HTTP " + res.status + "\n" + JSON.stringify(res.body, null, 2)
+            );
+          })
+          .catch(function (err) {
+            showResult(false, "Failed to reach verify_payment_api: " + err);
+          });
+      },
+      modal: {
+        ondismiss: function () {
+          showResult(false, "Checkout closed before completing payment.");
+        }
+      }
+    };
+
+    var rzp = new Razorpay(options);
+    rzp.on("payment.failed", function (response) {
+      showResult(false, "Payment failed: " + JSON.stringify(response.error, null, 2));
+    });
+    rzp.open();
+  });
+</script>
+
+</body>
+</html>

@@ -16,6 +16,7 @@ import dj_database_url
 from pathlib import Path
 from decouple import Csv, config
 
+from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
 env_file = os.getenv("ENV_FILE", ".env")
@@ -29,14 +30,47 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-# SECRET_KEY = 'django-insecure-hv+7!rqr2x6(mtb+8k-vr8h@70(0m9u5p(eb1_s5=is6u0!m7&'
 SECRET_KEY = os.getenv("SECRET_KEY")
+
+if not SECRET_KEY:
+    raise ImproperlyConfigured(
+        "SECRET_KEY environment variable is not set. Refusing to start "
+        "with an empty/unset key, since JWTs would be signed with it."
+    )
 
 # SECURITY WARNING: don't run with debug turned on in production!
 # DEBUG = True
 DEBUG = os.getenv("DEBUG", "False") == "True"
 
-ALLOWED_HOSTS = ["*"]
+
+def _parse_allowed_hosts(raw_value):
+    hosts = []
+
+    for part in raw_value.split(","):
+        part = part.strip()
+
+        if not part:
+            continue
+
+        part = part.replace("https://", "").replace("http://", "").rstrip("/")
+        hosts.append(part)
+
+    return hosts
+
+
+ALLOWED_HOSTS = _parse_allowed_hosts(os.getenv("ALLOWED_HOSTS", ""))
+
+if DEBUG:
+    for _local_host in ("localhost", "127.0.0.1", "[::1]"):
+        if _local_host not in ALLOWED_HOSTS:
+            ALLOWED_HOSTS.append(_local_host)
+
+    # Quick Cloudflare Tunnels (trycloudflare.com) get a fresh random
+    # subdomain every time they're started, so listing one by name here
+    # would break again on the next restart. A wildcard is only safe
+    # because this whole block is DEBUG-only — it never applies in
+    # production, where ALLOWED_HOSTS must still be set explicitly via env.
+    ALLOWED_HOSTS.append(".trycloudflare.com")
 
 
 # Application definition
@@ -166,8 +200,8 @@ CORS_ALLOWED_ORIGINS = [
     # "https://panchvastra-red.vercel.app",
     # "http://192.168.1.11:8001",
     # "https://7d70-2401-4900-1ca3-d17b-7888-b958-f7f0-696e.ngrok-free.app",
+    "https://reward-julie-fold-disclosure.trycloudflare.com",
     "https://panchvastra.com",
-    "https://advisors-montreal-dsl-era.trycloudflare.com",
     "https://www.panchvastra.com"
 ]
 
@@ -201,6 +235,21 @@ SWAGGER_HOST = os.getenv('SWAGGER_HOST')
 REST_FRAMEWORK = {
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
     'DEFAULT_AUTHENTICATION_CLASSES': (),
+
+    # Auth/identity is enforced by the custom `user_authentication_required`
+    # decorator (JWT-based), not DRF's auth/permission system, so DRF's own
+    # `request.user` is never populated (always anonymous) — UserRateThrottle
+    # would silently degrade to the same IP-keyed behavior as AnonRateThrottle.
+    # This is IP-keyed defense-in-depth against brute force/flooding on
+    # login/register/OTP endpoints, not the access-control layer itself.
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '30/minute',
+        'otp': '5/minute',
+        'admin_login': '10/minute',
+    },
 }
  
 SPECTACULAR_SETTINGS = {

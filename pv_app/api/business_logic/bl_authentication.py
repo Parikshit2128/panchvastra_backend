@@ -130,20 +130,27 @@ def login_user_logic(data):
 
         row = cursor.fetchone()
 
+        # Deliberately generic: don't reveal via status code or message
+        # whether this email is registered/verified (account enumeration).
+        generic_response = (
+            {"message": "If this email is registered and verified, an OTP has been sent."},
+            200
+        )
+
         if not row:
-            return {"message": "User not found."}, 404
+            return generic_response
 
         user_id, email_verified = row
 
         if not email_verified:
-            return {"message": "User not verified."}, 400
+            return generic_response
 
         _store_otp(cursor, user_id, otp, otp_expiry)
 
         connection.commit()
         send_verification_otp(email, otp)
 
-        return {"message": "OTP sent to email."}, 200
+        return generic_response
     
 
 
@@ -215,7 +222,7 @@ def verify_user_email_logic(data):
         if datetime.now(timezone.utc) > expires_at.replace(tzinfo=timezone.utc):
             return {"message": "OTP expired."}, 400
 
-        if otp != db_otp and otp != "654321":
+        if otp != db_otp:
             return {"message": "Invalid OTP."}, 400
 
         cursor.execute("""
@@ -304,8 +311,7 @@ def login_admin_logic(data):
             profile_image
         ) = user
 
-        print("users:", user)
-        if not check_password(password, password_hash):
+        if not password_hash or not check_password(password, password_hash):
             return {"message": "Invalid email or password."}, 401
 
         cursor.execute("""

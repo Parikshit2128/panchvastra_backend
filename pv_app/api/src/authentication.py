@@ -1,5 +1,6 @@
-from rest_framework.decorators import api_view, parser_classes
+from rest_framework.decorators import api_view, parser_classes, throttle_classes
 from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework import status
 
 from helpers.middleware import user_authentication_required
@@ -12,6 +13,7 @@ from pv_app.api.swagger.swag_authentication import register_user_swagger, login_
 
 @register_user_swagger
 @api_view(['POST'])
+@throttle_classes([ScopedRateThrottle])
 @generic_response_handler
 def register_user(request):
     serializer = UserRegistrationSerializer(data=request.data)
@@ -19,8 +21,12 @@ def register_user(request):
     return register_user_logic(serializer.validated_data)
 
 
+register_user.cls.throttle_scope = "otp"
+
+
 @login_user_swagger
 @api_view(['POST'])
+@throttle_classes([ScopedRateThrottle])
 @generic_response_handler
 def login_user(request):
     serializer = UserLoginSerializer(data=request.data)
@@ -28,9 +34,12 @@ def login_user(request):
     return login_user_logic(serializer.validated_data)
 
 
+login_user.cls.throttle_scope = "otp"
+
 
 @login_admin_swagger
 @api_view(['POST'])
+@throttle_classes([ScopedRateThrottle])
 @generic_response_handler
 def login_admin(request):
     serializer = AdminLoginSerializer(data=request.data)
@@ -38,8 +47,12 @@ def login_admin(request):
     return login_admin_logic(serializer.validated_data)
 
 
+login_admin.cls.throttle_scope = "admin_login"
+
+
 @verify_email_swagger
 @api_view(['POST'])
+@throttle_classes([ScopedRateThrottle])
 @generic_response_handler
 def verify_email(request):
     serializer = VerifyEmailSerializer(data=request.data)
@@ -47,8 +60,11 @@ def verify_email(request):
     return verify_user_email_logic(serializer.validated_data)
 
 
+verify_email.cls.throttle_scope = "otp"
+
+
 @user_profile_swagger
-@user_authentication_required()
+@user_authentication_required(role_required=[1, 2])
 @api_view(['GET', 'PUT'])
 @parser_classes([MultiPartParser, FormParser])
 @generic_response_handler

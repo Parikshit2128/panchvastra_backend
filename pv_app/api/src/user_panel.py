@@ -11,14 +11,19 @@ from pv_app.api.swagger.swag_user_panel import address_management_schema, catego
 
 
 @categories_management_schema
-# @user_authentication_required(role_required=[1, 2])
+@user_authentication_required(role_required=[1, 2])
 @api_view(["GET", "POST", "PUT", "DELETE"])
 @parser_classes([MultiPartParser, FormParser])
 @generic_response_handler
 def categories_management(request):
 
-    # user_id = request.user_id
-    user_id= 1
+    user_id = request.user_id
+
+    if request.method in ("POST", "PUT", "DELETE") and request.role_id != 1:
+        return {
+            "message": "You are not authorized to perform this action.",
+            "data": {}
+        }, status.HTTP_403_FORBIDDEN
 
     if request.method == "POST":
         serializer = CreateCategorySerializer(data=request.data)
@@ -32,8 +37,8 @@ def categories_management(request):
     elif request.method == "GET":
         category_id = request.GET.get("id")
         search = request.GET.get("search_parameter")
-        page = int(request.GET.get("page", 1))
-        page_size = int(request.GET.get("page_size", 10))
+        page = request.GET.get("page", 1)
+        page_size = request.GET.get("page_size", 10)
 
         return get_categories(
             page,
@@ -110,13 +115,18 @@ def categories_management(request):
 
 
 @products_management_schema
-# @user_authentication_required(role_required=[1, 2])
+@user_authentication_required(role_required=[1, 2])
 @api_view(["GET", "POST", "PUT", "DELETE"])
 @generic_response_handler
 def products_management(request):
 
-    # user_id = request.user_id
-    user_id = 1
+    user_id = request.user_id
+
+    if request.method in ("POST", "PUT", "DELETE") and request.role_id != 1:
+        return {
+            "message": "You are not authorized to perform this action.",
+            "data": {}
+        }, status.HTTP_403_FORBIDDEN
 
     if request.method == "POST":
 
@@ -243,7 +253,7 @@ def products_management(request):
 
 
 @cart_management_schema
-@user_authentication_required(role_required=2)
+@user_authentication_required(role_required=[1, 2])
 @api_view(["GET", "POST", "PUT", "DELETE"])
 @generic_response_handler
 def cart_management(request):
@@ -271,11 +281,18 @@ def cart_management(request):
 
 
 @coupon_management_schema
-@user_authentication_required(role_required=2)
+@user_authentication_required(role_required=[1, 2])
 @api_view(["GET", "POST", "PUT", "DELETE"])
 @generic_response_handler
 def coupon_management(request):
     user_id = request.user_id
+    is_admin = request.role_id == 1
+
+    if request.method in ("POST", "PUT", "DELETE") and not is_admin:
+        return {
+            "message": "You are not authorized to perform this action.",
+            "data": {}
+        }, status.HTTP_403_FORBIDDEN
 
     if request.method == "POST":
         serializer = CouponSerializer(data=request.data)
@@ -285,11 +302,16 @@ def coupon_management(request):
     elif request.method == "GET":
         coupon_id = request.GET.get("id")
         coupon_code = request.GET.get("code")
+        page = request.GET.get("page", 1)
+        page_size = request.GET.get("page_size", 10)
 
         return get_coupons(
             user_id=user_id,
             coupon_id=coupon_id,
-            coupon_code=coupon_code
+            coupon_code=coupon_code,
+            page=page,
+            page_size=page_size,
+            admin_view=is_admin
         )
 
     elif request.method == "PUT":
@@ -304,7 +326,7 @@ def coupon_management(request):
 
 
 @address_management_schema
-@user_authentication_required(role_required=2)
+@user_authentication_required(role_required=[1, 2])
 @api_view(["GET", "POST", "PUT", "DELETE"])
 @generic_response_handler
 def address_management(request):
@@ -348,42 +370,46 @@ def address_management(request):
 
 
 @notify_me_schema
+@user_authentication_required(role_required=[1, 2])
 @api_view(["GET", "POST", "DELETE"])
 @generic_response_handler
 def notify_me_management(request):
+
+    is_admin = request.role_id == 1
 
     if request.method == "POST":
         serializer = NotifyMeSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
         return create_notify_me_request(
-            serializer.validated_data
+            serializer.validated_data,
+            user_id=request.user_id
         )
 
     elif request.method == "GET":
         variant_size_id = request.GET.get("variant_size_id")
-        page = int(request.GET.get("page", 1))
-        page_size = int(request.GET.get("page_size", 10))
+        page = request.GET.get("page", 1)
+        page_size = request.GET.get("page_size", 10)
 
         return get_notify_me_requests(
             variant_size_id=variant_size_id,
             page=page,
-            page_size=page_size
+            page_size=page_size,
+            user_id=None if is_admin else request.user_id
         )
 
     elif request.method == "DELETE":
         notify_me_id = request.GET.get("id")
-        email = request.GET.get("email")
 
         return delete_notify_me_request(
             notify_me_id,
-            email
+            user_id=None if is_admin else request.user_id
         )
 
 
 
 @orders_schema
-@user_authentication_required(role_required=2)
+@user_authentication_required(role_required=[1, 2])
 @api_view(["GET"])
 @generic_response_handler
 def orders(request):
@@ -392,8 +418,8 @@ def orders(request):
     # user_id= 1
 
     order_id = request.GET.get("id")
-    page = int(request.GET.get("page", 1))
-    page_size = int(request.GET.get("page_size", 10))
+    page = request.GET.get("page", 1)
+    page_size = request.GET.get("page_size", 10)
     order_type=request.GET.get("order_type")
     
 

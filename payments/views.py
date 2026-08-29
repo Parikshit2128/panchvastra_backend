@@ -10,7 +10,7 @@ from .swagger import checkout_payment_schema, cod_order_schema
 
 
 @checkout_payment_schema
-@user_authentication_required(role_required=2)
+@user_authentication_required(role_required=[1, 2])
 @api_view(["POST"])
 @generic_response_handler
 def checkout_payment(request):
@@ -24,7 +24,7 @@ def checkout_payment(request):
 
 
 @cod_order_schema
-@user_authentication_required(role_required=2)
+@user_authentication_required(role_required=[1, 2])
 @api_view(["POST"])
 @generic_response_handler
 def cod_order(request):
@@ -37,7 +37,7 @@ def cod_order(request):
     )
 
 
-@user_authentication_required(role_required=2)
+@user_authentication_required(role_required=[1, 2])
 @api_view(["POST"])
 @generic_response_handler
 def verify_payment_api(request):

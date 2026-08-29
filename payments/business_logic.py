@@ -82,180 +82,220 @@ def _validate_coupon(cursor, coupon_code, user_id, subtotal):
     return {"coupon_id": coupon_id, "discount_amount": discount_amount}
 
 
+class _CheckoutAborted(Exception):
+    """Raised to unwind a checkout transaction.atomic() block with a specific response."""
+
+    def __init__(self, payload, status_code):
+        self.payload = payload
+        self.status_code = status_code
+
+
 def create_checkout_payment(validated_data, user_id):
 
     address_id = validated_data["address_id"]
     coupon_code = validated_data.get("coupon_code")
 
-    with connection.cursor() as cursor:
+    # Step 1: everything that touches our own DB happens in one real
+    # transaction, including a placeholder `payments` row — so the
+    # order<->payment link exists in the DB *before* we ever call out to
+    # Razorpay. If the gateway call below fails, there's something concrete
+    # to mark FAILED instead of an order silently stuck at PENDING forever
+    # with no payment row for the webhook to ever match against.
+    try:
+        with transaction.atomic():
+            with connection.cursor() as cursor:
 
-        # 1. Account email (shipping name/mobile come from the address instead)
-        cursor.execute("""
-            SELECT email
-            FROM public.users
-            WHERE id = %s
-            AND is_deleted = FALSE
-            AND is_active = TRUE
-        """, [user_id])
+                # 1. Account email (shipping name/mobile come from the address instead)
+                cursor.execute("""
+                    SELECT email
+                    FROM public.users
+                    WHERE id = %s
+                    AND is_deleted = FALSE
+                    AND is_active = TRUE
+                """, [user_id])
 
-        user_row = cursor.fetchone()
+                user_row = cursor.fetchone()
 
-        if not user_row:
-            return {"message": "User not found."}, 404
+                if not user_row:
+                    raise _CheckoutAborted({"message": "User not found."}, 404)
 
-        customer_email = user_row[0]
+                customer_email = user_row[0]
 
-        # 2. Saved address (must belong to the authenticated user)
-        cursor.execute("""
-            SELECT
-                full_name, mobile, address_line_1, address_line_2,
-                landmark, city, state, country, pincode
-            FROM public.addresses
-            WHERE id = %s
-            AND user_id = %s
-            AND is_deleted = FALSE
-        """, [address_id, user_id])
+                # 2. Saved address (must belong to the authenticated user)
+                cursor.execute("""
+                    SELECT
+                        full_name, mobile, address_line_1, address_line_2,
+                        landmark, city, state, country, pincode
+                    FROM public.addresses
+                    WHERE id = %s
+                    AND user_id = %s
+                    AND is_deleted = FALSE
+                """, [address_id, user_id])
 
-        address_row = cursor.fetchone()
+                address_row = cursor.fetchone()
 
-        if not address_row:
-            return {"message": "Address not found."}, 404
+                if not address_row:
+                    raise _CheckoutAborted({"message": "Address not found."}, 404)
 
-        (
-            customer_name,
-            customer_mobile,
-            address_line_1,
-            address_line_2,
-            landmark,
-            city,
-            state,
-            country,
-            pincode
-        ) = address_row
+                (
+                    customer_name,
+                    customer_mobile,
+                    address_line_1,
+                    address_line_2,
+                    landmark,
+                    city,
+                    state,
+                    country,
+                    pincode
+                ) = address_row
 
-        # 3. Cart items, priced from the DB (never trust client-supplied prices)
-        cursor.execute("""
-            SELECT
-                pvs.id AS variant_size_id,
-                pvs.size,
-                pvs.stock_quantity,
-                v.id AS variant_id,
-                v.color,
-                v.mrp,
-                v.selling_price,
-                p.id AS product_id,
-                p.name AS product_name,
-                ci.quantity
-            FROM public.cart_items ci
-            JOIN public.product_variant_sizes pvs ON pvs.id = ci.variant_size_id
-            JOIN public.product_variants v ON v.id = pvs.variant_id
-            JOIN public.products p ON p.id = v.product_id
-            WHERE ci.user_id = %s
-            AND ci.is_deleted = FALSE
-            AND ci.is_active = TRUE
-        """, [user_id])
+                # 3. Cart items, priced from the DB (never trust client-supplied prices)
+                cursor.execute("""
+                    SELECT
+                        pvs.id AS variant_size_id,
+                        pvs.size,
+                        pvs.stock_quantity,
+                        v.id AS variant_id,
+                        v.color,
+                        v.mrp,
+                        v.selling_price,
+                        p.id AS product_id,
+                        p.name AS product_name,
+                        ci.quantity
+                    FROM public.cart_items ci
+                    JOIN public.product_variant_sizes pvs ON pvs.id = ci.variant_size_id
+                    JOIN public.product_variants v ON v.id = pvs.variant_id
+                    JOIN public.products p ON p.id = v.product_id
+                    WHERE ci.user_id = %s
+                    AND ci.is_deleted = FALSE
+                    AND ci.is_active = TRUE
+                """, [user_id])
 
-        cart_rows = cursor.fetchall()
+                cart_rows = cursor.fetchall()
 
-        if not cart_rows:
-            return {"message": "Your cart is empty."}, 400
+                if not cart_rows:
+                    raise _CheckoutAborted({"message": "Your cart is empty."}, 400)
 
-        items = []
-        insufficient_stock = []
-        subtotal = 0.0
+                items = []
+                insufficient_stock = []
+                subtotal = 0.0
 
-        for (
-            variant_size_id, size, stock_quantity, variant_id, color,
-            mrp, selling_price, product_id, product_name, quantity
-        ) in cart_rows:
+                for (
+                    variant_size_id, size, stock_quantity, variant_id, color,
+                    mrp, selling_price, product_id, product_name, quantity
+                ) in cart_rows:
 
-            if quantity > stock_quantity:
-                insufficient_stock.append({
-                    "product_name": product_name,
-                    "size": size,
-                    "color": color,
-                    "requested": quantity,
-                    "available": stock_quantity
-                })
-                continue
+                    if quantity > stock_quantity:
+                        insufficient_stock.append({
+                            "product_name": product_name,
+                            "size": size,
+                            "color": color,
+                            "requested": quantity,
+                            "available": stock_quantity
+                        })
+                        continue
 
-            mrp = float(mrp)
-            selling_price = float(selling_price)
-            total_amount = round(selling_price * quantity, 2)
-            subtotal += total_amount
+                    mrp = float(mrp)
+                    selling_price = float(selling_price)
+                    total_amount = round(selling_price * quantity, 2)
+                    subtotal += total_amount
 
-            items.append({
-                "product_id": product_id,
-                "variant_id": variant_id,
-                "product_name": product_name,
-                "size": size,
-                "color": color,
-                "quantity": quantity,
-                "mrp": mrp,
-                "selling_price": selling_price,
-                "total_amount": total_amount
-            })
+                    items.append({
+                        "product_id": product_id,
+                        "variant_id": variant_id,
+                        "product_name": product_name,
+                        "size": size,
+                        "color": color,
+                        "quantity": quantity,
+                        "mrp": mrp,
+                        "selling_price": selling_price,
+                        "total_amount": total_amount
+                    })
 
-        if insufficient_stock:
-            return {
-                "message": "Some items in your cart don't have enough stock.",
-                "data": {"insufficient_stock": insufficient_stock}
-            }, 400
+                if insufficient_stock:
+                    raise _CheckoutAborted({
+                        "message": "Some items in your cart don't have enough stock.",
+                        "data": {"insufficient_stock": insufficient_stock}
+                    }, 400)
 
-        subtotal = round(subtotal, 2)
+                subtotal = round(subtotal, 2)
 
-        # 4. Coupon (optional)
-        coupon_id = None
-        discount_amount = 0.0
+                # 4. Coupon (optional)
+                coupon_id = None
+                discount_amount = 0.0
 
-        if coupon_code:
+                if coupon_code:
 
-            coupon_result = _validate_coupon(cursor, coupon_code, user_id, subtotal)
+                    coupon_result = _validate_coupon(cursor, coupon_code, user_id, subtotal)
 
-            if "error" in coupon_result:
-                return {"message": coupon_result["error"]}, 400
+                    if "error" in coupon_result:
+                        raise _CheckoutAborted({"message": coupon_result["error"]}, 400)
 
-            coupon_id = coupon_result["coupon_id"]
-            discount_amount = coupon_result["discount_amount"]
+                    coupon_id = coupon_result["coupon_id"]
+                    discount_amount = coupon_result["discount_amount"]
 
-        grand_total = round(subtotal - discount_amount, 2)
+                grand_total = round(subtotal - discount_amount, 2)
 
-        # 5. Insert order
-        order_number = f"ORD-{uuid.uuid4().hex[:10].upper()}"
+                # 5. Insert order
+                order_number = f"ORD-{uuid.uuid4().hex[:10].upper()}"
 
-        cursor.execute("""
-            INSERT INTO public.orders (
-                order_number, user_id, customer_name, customer_email, customer_mobile,
-                address_line_1, address_line_2, landmark, city, state, country, pincode,
-                subtotal, discount_amount, shipping_amount, tax_amount, grand_total,
-                coupon_id, payment_method, payment_status, order_status
-            )
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,0,0,%s,%s,'RAZORPAY','PENDING','PLACED')
-            RETURNING id;
-        """, [
-            order_number, user_id, customer_name, customer_email, customer_mobile,
-            address_line_1, address_line_2, landmark, city, state, country, pincode,
-            subtotal, discount_amount, grand_total, coupon_id
-        ])
+                cursor.execute("""
+                    INSERT INTO public.orders (
+                        order_number, user_id, customer_name, customer_email, customer_mobile,
+                        address_line_1, address_line_2, landmark, city, state, country, pincode,
+                        subtotal, discount_amount, shipping_amount, tax_amount, grand_total,
+                        coupon_id, payment_method, payment_status, order_status
+                    )
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,0,0,%s,%s,'RAZORPAY','PENDING','PLACED')
+                    RETURNING id;
+                """, [
+                    order_number, user_id, customer_name, customer_email, customer_mobile,
+                    address_line_1, address_line_2, landmark, city, state, country, pincode,
+                    subtotal, discount_amount, grand_total, coupon_id
+                ])
 
-        order_id = cursor.fetchone()[0]
+                order_id = cursor.fetchone()[0]
 
-        # 6. Insert order items
-        for item in items:
+                # 6. Insert order items
+                for item in items:
 
-            cursor.execute("""
-                INSERT INTO public.order_items (
-                    order_id, product_id, variant_id, product_name, size, color,
-                    quantity, mrp, selling_price, total_amount
-                )
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            """, [
-                order_id, item["product_id"], item["variant_id"], item["product_name"],
-                item["size"], item["color"], item["quantity"], item["mrp"],
-                item["selling_price"], item["total_amount"]
-            ])
+                    cursor.execute("""
+                        INSERT INTO public.order_items (
+                            order_id, product_id, variant_id, product_name, size, color,
+                            quantity, mrp, selling_price, total_amount
+                        )
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    """, [
+                        order_id, item["product_id"], item["variant_id"], item["product_name"],
+                        item["size"], item["color"], item["quantity"], item["mrp"],
+                        item["selling_price"], item["total_amount"]
+                    ])
 
-        # 7. Razorpay order
+                # 7. Placeholder payment row — razorpay_order_id filled in once
+                # the gateway call below succeeds.
+                cursor.execute("""
+                    INSERT INTO public.payments (
+                        order_id,
+                        transaction_amount,
+                        payment_status
+                    )
+                    VALUES (%s,%s,'PENDING')
+                    RETURNING id
+                """, [
+                    order_id,
+                    grand_total
+                ])
+
+                payment_row_id = cursor.fetchone()[0]
+
+    except _CheckoutAborted as e:
+        return e.payload, e.status_code
+
+    # Step 2: call the gateway *outside* the DB transaction, since a slow or
+    # failed HTTP call must never hold a DB transaction open. If it fails,
+    # the order/payment rows already exist and are explicitly marked FAILED
+    # here rather than left looking like a live pending checkout forever.
+    try:
         razorpay_order = client.order.create({
             "amount": int(round(grand_total * 100)),
             "currency": "INR",
@@ -263,22 +303,23 @@ def create_checkout_payment(validated_data, user_id):
             "payment_capture": 1
         })
 
-        # 8. Insert payment row
-        cursor.execute("""
-            INSERT INTO public.payments (
-                order_id,
-                transaction_amount,
-                razorpay_order_id,
-                payment_status
-            )
-            VALUES (%s,%s,%s,'PENDING')
-        """, [
-            order_id,
-            grand_total,
-            razorpay_order["id"]
-        ])
+    except Exception:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                UPDATE public.payments SET payment_status='FAILED' WHERE id=%s
+            """, [payment_row_id])
+            cursor.execute("""
+                UPDATE public.orders SET payment_status='FAILED', order_status='CANCELLED' WHERE id=%s
+            """, [order_id])
 
-        connection.commit()
+        return {
+            "message": "Unable to initiate payment right now. Please try again."
+        }, 502
+
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            UPDATE public.payments SET razorpay_order_id=%s WHERE id=%s
+        """, [razorpay_order["id"], payment_row_id])
 
     return {
         "order_id": order_id,
@@ -287,15 +328,6 @@ def create_checkout_payment(validated_data, user_id):
         "currency": "INR",
         "key": settings.RAZORPAY_KEY_ID
     }, 201
-
-
-
-class _CheckoutAborted(Exception):
-    """Raised to unwind the COD transaction.atomic() block with a specific response."""
-
-    def __init__(self, payload, status_code):
-        self.payload = payload
-        self.status_code = status_code
 
 
 def create_cod_order(validated_data, user_id):
@@ -594,6 +626,94 @@ def create_cod_order(validated_data, user_id):
 
 
 
+def _apply_payment_status(cursor, payment_id, order_id, user_id, grand_total, coupon_id, new_payment_status, razorpay_payment_id, gateway_response):
+    """Applies a payment status transition. Caller must already hold a row
+    lock (SELECT ... FOR UPDATE) on the payments row and run this inside
+    transaction.atomic() — this function does not manage the transaction
+    itself, so it's safe to share between the webhook and verify_payment.
+    """
+
+    cursor.execute("""
+        UPDATE public.payments
+        SET
+            razorpay_payment_id=%s,
+            payment_status=%s,
+            gateway_response=%s,
+            paid_at=NOW()
+        WHERE id=%s
+    """, [
+        razorpay_payment_id,
+        new_payment_status,
+        gateway_response,
+        payment_id
+    ])
+
+    cursor.execute("""
+        UPDATE public.orders
+        SET payment_status=%s
+        WHERE id=%s
+    """, [
+        new_payment_status,
+        order_id
+    ])
+
+    if new_payment_status != "SUCCESS":
+        return
+
+    cursor.execute("""
+        UPDATE public.users
+        SET
+            total_orders = COALESCE(total_orders, 0) + 1,
+            total_spent = COALESCE(total_spent, 0) + %s,
+            last_order_at = NOW()
+        WHERE id=%s
+    """, [grand_total, user_id])
+
+    if coupon_id:
+        cursor.execute("""
+            UPDATE public.coupons
+            SET used_count = COALESCE(used_count, 0) + 1
+            WHERE id=%s
+        """, [coupon_id])
+
+    # Decrement stock for the purchased sizes — guarded so a size that's
+    # already been sold out by another order (e.g. a COD sale that landed
+    # first) can never be driven negative; a payment already captured can't
+    # be un-captured, so this is logged for manual review instead of failing.
+    cursor.execute("""
+        UPDATE public.product_variant_sizes pvs
+        SET stock_quantity = pvs.stock_quantity - oi.quantity
+        FROM public.order_items oi
+        WHERE oi.order_id = %s
+        AND pvs.variant_id = oi.variant_id
+        AND pvs.size = oi.size
+        AND pvs.stock_quantity >= oi.quantity
+    """, [order_id])
+
+    cursor.execute("SELECT COUNT(*) FROM public.order_items WHERE order_id=%s", [order_id])
+    expected_item_count = cursor.fetchone()[0]
+
+    if cursor.rowcount != expected_item_count:
+        print(
+            f"WARNING: stock decrement for order {order_id} affected "
+            f"{cursor.rowcount} of {expected_item_count} items — some sizes "
+            "may have already been oversold by another order. Needs manual review."
+        )
+
+    # Purchased items no longer belong in the cart.
+    cursor.execute("""
+        UPDATE public.cart_items ci
+        SET is_deleted = TRUE, is_active = FALSE, updated_at = NOW()
+        FROM public.order_items oi
+        JOIN public.product_variant_sizes pvs
+            ON pvs.variant_id = oi.variant_id AND pvs.size = oi.size
+        WHERE oi.order_id = %s
+        AND ci.user_id = %s
+        AND ci.variant_size_id = pvs.id
+        AND ci.is_deleted = FALSE
+    """, [order_id, user_id])
+
+
 def verify_payment(validated_data, user_id):
 
     generated_signature = hmac.new(
@@ -605,10 +725,45 @@ def verify_payment(validated_data, user_id):
         digestmod=hashlib.sha256
     ).hexdigest()
 
-    if generated_signature == validated_data["razorpay_signature"]:
-        return {"message": "Payment verified successfully."}, 200
+    if not hmac.compare_digest(generated_signature, validated_data["razorpay_signature"]):
+        return {"message": "Invalid signature."}, 400
 
-    return {"message": "Invalid signature."}, 400
+    with transaction.atomic():
+        with connection.cursor() as cursor:
+
+            # Lock the payment row (and confirm it belongs to this user)
+            # before deciding whether to apply the success transition, so a
+            # concurrent webhook delivery for the same payment can't race this.
+            cursor.execute("""
+                SELECT p.id, p.order_id, o.user_id, o.grand_total, p.payment_status, o.coupon_id
+                FROM public.payments p
+                JOIN public.orders o ON o.id = p.order_id
+                WHERE p.razorpay_order_id = %s
+                AND o.user_id = %s
+                FOR UPDATE OF p
+            """, [validated_data["razorpay_order_id"], user_id])
+
+            row = cursor.fetchone()
+
+            if not row:
+                return {"message": "Order not found."}, 404
+
+            payment_id, order_id, order_user_id, grand_total, existing_payment_status, coupon_id = row
+
+            if existing_payment_status != "SUCCESS":
+                _apply_payment_status(
+                    cursor,
+                    payment_id,
+                    order_id,
+                    order_user_id,
+                    grand_total,
+                    coupon_id,
+                    "SUCCESS",
+                    validated_data["razorpay_payment_id"],
+                    json.dumps({"source": "verify_payment_api"})
+                )
+
+    return {"message": "Payment verified successfully."}, 200
 
 
 def razorpay_webhook_handler(request):
@@ -623,108 +778,64 @@ def razorpay_webhook_handler(request):
         hashlib.sha256
     ).hexdigest()
 
-    # ❌ MUST return Response, not tuple
-    if expected_signature != signature:
+    if not signature or not hmac.compare_digest(expected_signature, signature):
         return Response(
             {"message": "Invalid signature"},
             status=400
         )
 
-    data = json.loads(payload)
+    try:
+        data = json.loads(payload)
+        payment = data["payload"]["payment"]["entity"]
 
-    payment = data["payload"]["payment"]["entity"]
+        razorpay_order_id = payment["order_id"]
+        razorpay_payment_id = payment["id"]
+        status_value = payment["status"]
 
-    razorpay_order_id = payment["order_id"]
-    razorpay_payment_id = payment["id"]
-    status_value = payment["status"]
+    except (ValueError, KeyError, TypeError):
+        # Not a payment.* event shape we handle (e.g. a refund.* event) —
+        # acknowledge with 200 so Razorpay doesn't retry something that
+        # will never succeed.
+        return Response({"message": "Unrecognized webhook payload; ignored."}, status=200)
 
-    with connection.cursor() as cursor:
-
-        cursor.execute("""
-            SELECT p.id, p.order_id, o.user_id, o.grand_total, o.payment_status, o.coupon_id
-            FROM public.payments p
-            JOIN public.orders o ON o.id = p.order_id
-            WHERE p.razorpay_order_id=%s
-        """, [razorpay_order_id])
-
-        row = cursor.fetchone()
-
-        if not row:
-            return Response(
-                {"message": "Payment not found"},
-                status=200
-            )
-
-        payment_id, order_id, user_id, grand_total, existing_payment_status, coupon_id = row
-
-        new_payment_status = "SUCCESS" if status_value == "captured" else "FAILED"
-
-        cursor.execute("""
-            UPDATE public.payments
-            SET
-                razorpay_payment_id=%s,
-                payment_status=%s,
-                gateway_response=%s,
-                paid_at=NOW()
-            WHERE id=%s
-        """, [
-            razorpay_payment_id,
-            new_payment_status,
-            json.dumps(data),
-            payment_id
-        ])
-
-        cursor.execute("""
-            UPDATE public.orders
-            SET payment_status=%s
-            WHERE id=%s
-        """, [
-            new_payment_status,
-            order_id
-        ])
-
-        # Everything below only happens on the transition into SUCCESS,
-        # so repeated webhook deliveries don't double-apply.
-        if new_payment_status == "SUCCESS" and existing_payment_status != "SUCCESS":
+    with transaction.atomic():
+        with connection.cursor() as cursor:
 
             cursor.execute("""
-                UPDATE public.users
-                SET
-                    total_orders = COALESCE(total_orders, 0) + 1,
-                    total_spent = COALESCE(total_spent, 0) + %s,
-                    last_order_at = NOW()
-                WHERE id=%s
-            """, [grand_total, user_id])
+                SELECT p.id, p.order_id, o.user_id, o.grand_total, p.payment_status, o.coupon_id
+                FROM public.payments p
+                JOIN public.orders o ON o.id = p.order_id
+                WHERE p.razorpay_order_id=%s
+                FOR UPDATE OF p
+            """, [razorpay_order_id])
 
-            if coupon_id:
-                cursor.execute("""
-                    UPDATE public.coupons
-                    SET used_count = COALESCE(used_count, 0) + 1
-                    WHERE id=%s
-                """, [coupon_id])
+            row = cursor.fetchone()
 
-            # Decrement stock for the purchased sizes.
-            cursor.execute("""
-                UPDATE public.product_variant_sizes pvs
-                SET stock_quantity = pvs.stock_quantity - oi.quantity
-                FROM public.order_items oi
-                WHERE oi.order_id = %s
-                AND pvs.variant_id = oi.variant_id
-                AND pvs.size = oi.size
-            """, [order_id])
+            if not row:
+                return Response(
+                    {"message": "Payment not found"},
+                    status=200
+                )
 
-            # Purchased items no longer belong in the cart.
-            cursor.execute("""
-                UPDATE public.cart_items ci
-                SET is_deleted = TRUE, is_active = FALSE, updated_at = NOW()
-                FROM public.order_items oi
-                JOIN public.product_variant_sizes pvs
-                    ON pvs.variant_id = oi.variant_id AND pvs.size = oi.size
-                WHERE oi.order_id = %s
-                AND ci.user_id = %s
-                AND ci.variant_size_id = pvs.id
-                AND ci.is_deleted = FALSE
-            """, [order_id, user_id])
+            payment_id, order_id, user_id, grand_total, existing_payment_status, coupon_id = row
+
+            new_payment_status = "SUCCESS" if status_value == "captured" else "FAILED"
+
+            # Only apply the transition once — repeated webhook deliveries
+            # (Razorpay retries, or multiple event types for one payment)
+            # must not double-decrement stock or double-count revenue.
+            if existing_payment_status != "SUCCESS":
+                _apply_payment_status(
+                    cursor,
+                    payment_id,
+                    order_id,
+                    user_id,
+                    grand_total,
+                    coupon_id,
+                    new_payment_status,
+                    razorpay_payment_id,
+                    json.dumps(data)
+                )
 
     return Response(
         {"message": "Webhook processed"},

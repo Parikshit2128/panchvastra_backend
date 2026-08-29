@@ -1,9 +1,9 @@
 import base64
 from datetime import date, datetime, timedelta, timezone
 import decimal
-import inspect
+import html
+import math
 import random
-import traceback
 import traceback
 import uuid
 from imagekitio import ImageKit
@@ -11,8 +11,7 @@ import jwt
 import os
 import requests
 from panchvastra.settings import BREVO_API_KEY, IMAGEKIT_PRIVATE_KEY, IMAGEKIT_PUBLIC_KEY, IMAGEKIT_URL_ENDPOINT, SECRET_KEY
-from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
-from django.db import connection
+from django.db import connection, DataError, IntegrityError
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.exceptions import ValidationError, APIException
@@ -62,28 +61,60 @@ def db_query_result_to_json(query_result, column_names):
 
 
 
-def paginate_queryset(qs, page, page_size):
-    paginator = Paginator(qs, page_size)
+MAX_PAGE_SIZE = 100
+
+
+def clamp_page_size(page_size, default=10, maximum=MAX_PAGE_SIZE):
+    try:
+        page_size = int(page_size)
+    except (TypeError, ValueError):
+        return default
+
+    return max(1, min(page_size, maximum))
+
+
+def clamp_page(page, default=1):
+    try:
+        page = int(page)
+    except (TypeError, ValueError):
+        return default
+
+    return max(1, page)
+
+
+def resolve_pagination(page, page_size, total_records):
+    """Computes the (page, page_size, offset, pagination_dict) for a SQL
+    LIMIT/OFFSET query against a table already known to hold `total_records`
+    matching rows — the caller runs its own COUNT(*) first, so this never
+    has to materialize the underlying rows just to paginate them.
+
+    Mirrors Django's Paginator edge-case handling so this is a drop-in
+    replacement for the old fetch-everything-then-paginate-in-Python
+    approach: a non-integer page defaults to page 1, and a page number
+    outside [1, total_pages] clamps to the last page.
+    """
+    page_size = clamp_page_size(page_size)
+    total_pages = max(1, math.ceil(total_records / page_size))
 
     try:
-        page_obj = paginator.page(page)
-    except PageNotAnInteger:
+        page = int(page)
+        if page < 1 or page > total_pages:
+            page = total_pages
+    except (TypeError, ValueError):
         page = 1
-        page_obj = paginator.page(page)
-    except EmptyPage:
-        page = paginator.num_pages
-        page_obj = paginator.page(page)
+
+    offset = (page - 1) * page_size
 
     pagination = {
         "current_page": page,
         "page_size": page_size,
-        "total_pages": paginator.num_pages,
-        "total_records": paginator.count,
-        "has_next": page_obj.has_next(),
-        "has_previous": page_obj.has_previous(),
+        "total_pages": total_pages,
+        "total_records": total_records,
+        "has_next": page < total_pages,
+        "has_previous": page > 1,
     }
 
-    return page_obj.object_list, pagination
+    return page, page_size, offset, pagination
 
 
 def generic_response_handler(business_func):
@@ -128,12 +159,34 @@ def generic_response_handler(business_func):
                 "data": {}
             }, status=e.status_code)
 
-        except Exception as e:
+        except DataError:
+            # Typically a malformed id/number in a query param or body field
+            # that failed a Postgres-side type cast (e.g. "id=abc").
+            traceback.print_exc()
+            connection.rollback()
+            return Response({
+                "success": False,
+                "message": "Invalid request parameters.",
+                "data": {}
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        except IntegrityError:
+            # A uniqueness/FK constraint was violated, usually from a race
+            # between two concurrent requests (e.g. duplicate coupon code).
+            traceback.print_exc()
+            connection.rollback()
+            return Response({
+                "success": False,
+                "message": "This action conflicts with existing data. Please retry.",
+                "data": {}
+            }, status=status.HTTP_409_CONFLICT)
+
+        except Exception:
             traceback.print_exc()
             return Response({
                 "success": False,
                 "message": "Internal Server Error",
-                "error": str(e)
+                "data": {}
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     return wrapper
@@ -307,12 +360,16 @@ def send_restock_notification_email(email, product_name, color, size):
         smtp_email = os.getenv("EMAIL_HOST_USER")
         smtp_password = os.getenv("EMAIL_HOST_PASSWORD")
 
+        safe_product_name = html.escape(str(product_name))
+        safe_color = html.escape(str(color))
+        safe_size = html.escape(str(size))
+
         message = MIMEMultipart("alternative")
-        message["Subject"] = f"{product_name} is back in stock!"
+        message["Subject"] = f"{safe_product_name} is back in stock!"
         message["From"] = f"Panchvastra <{smtp_email}>"
         message["To"] = email
 
-        html = f"""
+        body = f"""
         <html>
             <body style="font-family: Arial, sans-serif;">
                 <h2>Panchvastra</h2>
@@ -324,7 +381,7 @@ def send_restock_notification_email(email, product_name, color, size):
                     font-weight:bold;
                     color:#0d6efd;
                     margin:20px 0;">
-                    {product_name} - {color} - {size}
+                    {safe_product_name} - {safe_color} - {safe_size}
                 </div>
 
                 <p>Hurry, grab it before it runs out again.</p>
@@ -339,7 +396,7 @@ def send_restock_notification_email(email, product_name, color, size):
         </html>
         """
 
-        message.attach(MIMEText(html, "html"))
+        message.attach(MIMEText(body, "html"))
 
         with smtplib.SMTP(smtp_server, smtp_port) as server:
             server.starttls()
@@ -351,9 +408,11 @@ def send_restock_notification_email(email, product_name, color, size):
             )
 
         print(f"Restock notification email sent to {email}.")
+        return True
 
     except Exception:
         traceback.print_exc()
+        return False
 
 
 def decode_jwt_token(token):
@@ -375,13 +434,20 @@ def decode_jwt_token(token):
         algorithms=["HS256"]
     )
 
-print(inspect.signature(ImageKit))
+_imagekit = None
 
-imagekit = ImageKit(
-    public_key=IMAGEKIT_PUBLIC_KEY,
-    private_key=IMAGEKIT_PRIVATE_KEY,
-    url_endpoint=IMAGEKIT_URL_ENDPOINT,
-)
+
+def _get_imagekit():
+    global _imagekit
+
+    if _imagekit is None:
+        _imagekit = ImageKit(
+            public_key=IMAGEKIT_PUBLIC_KEY,
+            private_key=IMAGEKIT_PRIVATE_KEY,
+            url_endpoint=IMAGEKIT_URL_ENDPOINT,
+        )
+
+    return _imagekit
 
 
 def upload_image_to_imagekit(image, folder):
@@ -394,7 +460,7 @@ def upload_image_to_imagekit(image, folder):
         folder=folder
     )
 
-    response = imagekit.upload_file(
+    response = _get_imagekit().upload_file(
         file=image_base64,
         file_name=f"{uuid.uuid4()}_{image.name}",
         options=options
@@ -413,7 +479,7 @@ def delete_image_from_imagekit(file_id):
     if not file_id:
         return
 
-    imagekit.delete_file(file_id)
+    _get_imagekit().delete_file(file_id)
 
 
 # def replace_image(

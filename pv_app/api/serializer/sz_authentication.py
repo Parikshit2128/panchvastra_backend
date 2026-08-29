@@ -4,7 +4,7 @@ class UserRegistrationSerializer(serializers.Serializer):
     first_name = serializers.CharField(max_length=100, required=False)
     last_name = serializers.CharField(max_length=100, required=False)
     email = serializers.EmailField()
-    phone_number = serializers.CharField(max_length=20, required=False, allow_null=True, allow_blank=True)
+    mobile = serializers.CharField(max_length=20, required=False, allow_null=True, allow_blank=True)
 
 class UserLoginSerializer(serializers.Serializer):
     email = serializers.EmailField()
