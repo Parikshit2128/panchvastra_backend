@@ -8,7 +8,7 @@ from rest_framework import status
 
 from helpers.utils import decode_jwt_token
 
-def user_authentication_required(role_required=None):
+def user_authentication_required(role_required=None, public_methods=None):
     """
     JWT Authentication decorator.
 
@@ -17,7 +17,17 @@ def user_authentication_required(role_required=None):
         @user_authentication_required(role_required=2)
         @user_authentication_required(role_required=[1, 2])
         @user_authentication_required(role_required=(1, 2, 3))
+        @user_authentication_required(role_required=[1, 2], public_methods=["GET"])
+
+    public_methods: HTTP methods (e.g. ["GET"]) that don't require an
+    Authorization header at all — for a request using one of these methods,
+    request.user_id/request.role_id/request.jwt_payload are set to None
+    instead of rejecting it. A token sent anyway (even on a public method)
+    is still validated normally, so a caller that IS logged in gets a real
+    request.user_id.
     """
+
+    public_methods = set(public_methods or [])
 
     def decorator(view_func):
 
@@ -27,6 +37,13 @@ def user_authentication_required(role_required=None):
             auth_header = request.headers.get("Authorization")
 
             if not auth_header:
+
+                if request.method in public_methods:
+                    request.user_id = None
+                    request.role_id = None
+                    request.jwt_payload = None
+                    return view_func(request, *args, **kwargs)
+
                 return JsonResponse(
                     {
                         "success": False,

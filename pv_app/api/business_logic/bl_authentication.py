@@ -130,27 +130,29 @@ def login_user_logic(data):
 
         row = cursor.fetchone()
 
-        # Deliberately generic: don't reveal via status code or message
-        # whether this email is registered/verified (account enumeration).
-        generic_response = (
-            {"message": "If this email is registered and verified, an OTP has been sent."},
-            200
-        )
-
+        # Trades account-enumeration protection for a clearer UX: the
+        # response now distinguishes "not registered" from "registered but
+        # unverified" from "verified", instead of one generic message.
         if not row:
-            return generic_response
+            return {
+                "message": "This email is not registered. Please sign up first."
+            }, 404
 
         user_id, email_verified = row
-
-        if not email_verified:
-            return generic_response
 
         _store_otp(cursor, user_id, otp, otp_expiry)
 
         connection.commit()
         send_verification_otp(email, otp)
 
-        return generic_response
+        if not email_verified:
+            return {
+                "message": "Your email is not verified yet. We've sent an OTP to verify it."
+            }, 200
+
+        return {
+            "message": "OTP has been sent to your email."
+        }, 200
     
 
 

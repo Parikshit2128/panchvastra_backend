@@ -52,7 +52,7 @@ def _attach_variant_image_uploads(validated_data, request):
 
 
 @categories_management_schema
-@user_authentication_required(role_required=[1, 2])
+@user_authentication_required(role_required=[1, 2], public_methods=["GET"])
 @api_view(["GET", "POST", "PUT", "DELETE"])
 @parser_classes([MultiPartParser, FormParser])
 @generic_response_handler
@@ -156,7 +156,7 @@ def categories_management(request):
 
 
 @products_management_schema
-@user_authentication_required(role_required=[1, 2])
+@user_authentication_required(role_required=[1, 2], public_methods=["GET"])
 @api_view(["GET", "POST", "PUT", "DELETE"])
 @parser_classes([JSONParser, MultiPartParser, FormParser])
 @generic_response_handler

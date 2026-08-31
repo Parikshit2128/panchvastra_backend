@@ -10,7 +10,7 @@ from botocore.config import Config as BotoConfig
 import jwt
 import os
 import requests
-from panchvastra.settings import BREVO_API_KEY, RUSTFS_ACCESS_KEY, RUSTFS_BUCKET_NAME, RUSTFS_ENDPOINT_URL, RUSTFS_PUBLIC_URL_BASE, RUSTFS_SECRET_KEY, SECRET_KEY
+from panchvastra.settings import BREVO_API_KEY, RUSTFS_ACCESS_KEY, RUSTFS_BUCKET_NAME, RUSTFS_ENDPOINT_URL, RUSTFS_PUBLIC_URL_BASE, RUSTFS_REGION, RUSTFS_SECRET_KEY, SECRET_KEY
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import connection, DataError, IntegrityError
 from rest_framework.response import Response
@@ -446,6 +446,7 @@ def _get_s3_client():
             endpoint_url=RUSTFS_ENDPOINT_URL,
             aws_access_key_id=RUSTFS_ACCESS_KEY,
             aws_secret_access_key=RUSTFS_SECRET_KEY,
+            region_name=RUSTFS_REGION,
             config=BotoConfig(
                 signature_version="s3v4",
                 s3={"addressing_style": "path"}

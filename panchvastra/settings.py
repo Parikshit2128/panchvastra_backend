@@ -312,6 +312,11 @@ RUSTFS_ACCESS_KEY = os.getenv("RUSTFS_ACCESS_KEY")
 RUSTFS_SECRET_KEY = os.getenv("RUSTFS_SECRET_KEY")
 RUSTFS_BUCKET_NAME = os.getenv("RUSTFS_BUCKET_NAME", "panchvastra")
 RUSTFS_PUBLIC_URL_BASE = os.getenv("RUSTFS_PUBLIC_URL_BASE")
+# RustFS doesn't use AWS regions, but boto3's SigV4 signer still requires
+# some region string to be set (there's no env var/~/.aws/config on the
+# server to fall back on) or every request fails with NoRegionError — the
+# actual value is arbitrary for an S3-compatible backend like this.
+RUSTFS_REGION = os.getenv("RUSTFS_REGION", "us-east-1")
 
 
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
