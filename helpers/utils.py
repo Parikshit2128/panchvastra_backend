@@ -1,4 +1,3 @@
-import base64
 from datetime import date, datetime, timedelta, timezone
 import decimal
 import html
@@ -6,14 +5,16 @@ import math
 import random
 import traceback
 import uuid
-from imagekitio import ImageKit
+import boto3
+from botocore.config import Config as BotoConfig
 import jwt
 import os
 import requests
-from panchvastra.settings import BREVO_API_KEY, IMAGEKIT_PRIVATE_KEY, IMAGEKIT_PUBLIC_KEY, IMAGEKIT_URL_ENDPOINT, SECRET_KEY
+from panchvastra.settings import BREVO_API_KEY, RUSTFS_ACCESS_KEY, RUSTFS_BUCKET_NAME, RUSTFS_ENDPOINT_URL, RUSTFS_PUBLIC_URL_BASE, RUSTFS_SECRET_KEY, SECRET_KEY
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import connection, DataError, IntegrityError
 from rest_framework.response import Response
-from rest_framework import status
+from rest_framework import serializers, status
 from rest_framework.exceptions import ValidationError, APIException
 from django.http import Http404
 
@@ -23,7 +24,6 @@ from email.mime.text import MIMEText
 
 from panchvastra.settings import EMAIL_HOST, EMAIL_HOST_PASSWORD, EMAIL_HOST_USER, EMAIL_PORT
 from django.http import JsonResponse
-from imagekitio.models.UploadFileRequestOptions import UploadFileRequestOptions
 
 
 
@@ -434,52 +434,84 @@ def decode_jwt_token(token):
         algorithms=["HS256"]
     )
 
-_imagekit = None
+_s3_client = None
 
 
-def _get_imagekit():
-    global _imagekit
+def _get_s3_client():
+    global _s3_client
 
-    if _imagekit is None:
-        _imagekit = ImageKit(
-            public_key=IMAGEKIT_PUBLIC_KEY,
-            private_key=IMAGEKIT_PRIVATE_KEY,
-            url_endpoint=IMAGEKIT_URL_ENDPOINT,
+    if _s3_client is None:
+        _s3_client = boto3.client(
+            "s3",
+            endpoint_url=RUSTFS_ENDPOINT_URL,
+            aws_access_key_id=RUSTFS_ACCESS_KEY,
+            aws_secret_access_key=RUSTFS_SECRET_KEY,
+            config=BotoConfig(
+                signature_version="s3v4",
+                s3={"addressing_style": "path"}
+            ),
         )
 
-    return _imagekit
+    return _s3_client
 
 
-def upload_image_to_imagekit(image, folder):
+def upload_image_to_storage(image, folder):
 
-    image_base64 = base64.b64encode(
-        image.read()
-    ).decode("utf-8")
+    object_key = f"{folder.strip('/')}/{uuid.uuid4()}_{image.name}"
 
-    options = UploadFileRequestOptions(
-        folder=folder
-    )
+    extra_args = {}
+    if getattr(image, "content_type", None):
+        extra_args["ContentType"] = image.content_type
 
-    response = _get_imagekit().upload_file(
-        file=image_base64,
-        file_name=f"{uuid.uuid4()}_{image.name}",
-        options=options
+    _get_s3_client().upload_fileobj(
+        image,
+        RUSTFS_BUCKET_NAME,
+        object_key,
+        ExtraArgs=extra_args
     )
 
     return {
-        "url": response.url,
-        "file_id": response.file_id,
-        "name": response.name
+        "url": f"{RUSTFS_PUBLIC_URL_BASE.rstrip('/')}/{object_key}",
+        "file_id": object_key,
+        "name": image.name
     }
 
 
 
-def delete_image_from_imagekit(file_id):
+def delete_image_from_storage(file_id):
 
     if not file_id:
         return
 
-    _get_imagekit().delete_file(file_id)
+    _get_s3_client().delete_object(
+        Bucket=RUSTFS_BUCKET_NAME,
+        Key=file_id
+    )
+
+
+def validate_image_files(files):
+    """Runs each uploaded file through the same ImageField validator
+    CreateCategorySerializer/UpdateCategorySerializer already use for the
+    category image, so a corrupt/non-image upload is rejected before it
+    ever reaches storage.
+    """
+    image_field = serializers.ImageField()
+    validated = []
+
+    for file in files:
+        try:
+            validated.append(image_field.run_validation(file))
+        except ValidationError as e:
+            raise ValidationError({"images": e.detail})
+        except DjangoValidationError as e:
+            # ImageField.to_internal_value defers straight to Django's form
+            # field and doesn't convert its ValidationError itself — DRF
+            # normally does that conversion one level up, inside
+            # Serializer.to_internal_value, which we bypass by validating
+            # each file directly.
+            raise ValidationError({"images": e.messages})
+
+    return validated
 
 
 # def replace_image(

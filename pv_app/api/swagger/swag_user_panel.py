@@ -164,7 +164,32 @@ products_management_schema = extend_schema_view(
     post=extend_schema(
         tags=["Products"],
         summary="Create Product",
-        description="Create a new product with variants, sizes and images.",
+        description="""
+        Create a new product with variants, sizes and images.
+
+        Images belong to a variant, not the product directly (they're stored
+        in product_variant_images, keyed by variant_id) — this is the same
+        relationship the GET response already exposes as variants[].images.
+
+        Two ways to submit this request:
+
+        1) application/json (no image files) — body is the product object
+           exactly as before; variants[].images is simply omitted.
+
+        2) multipart/form-data (to attach image files) — because multipart
+           has no way to express a nested variants[].images list of files,
+           send the exact same product JSON as a string in a 'data' field,
+           and attach each variant's files separately as
+           variant_<index>_images, where <index> is that variant's
+           zero-based position in the 'variants' array inside 'data'
+           (works for brand-new variants too, since they don't have an id
+           yet). Multiple files can be attached under the same
+           variant_<index>_images field name. There is no limit on the
+           number of images per variant.
+
+        display_order is assigned automatically in submission order,
+        starting at 1 for a new product/variant.
+        """,
         request=CreateProductSerializer,
     ),
 
@@ -177,10 +202,22 @@ products_management_schema = extend_schema_view(
         Business Rules:
         - If id exists in child records → Update.
         - If id is missing → Create new child.
-        - delete_variant_ids → Soft delete variants.
-        - delete_variant_size_ids → Soft delete variant sizes.
-        - delete_product_image_ids → Soft delete product images.
-        - delete_variant_image_ids → Soft delete variant images.
+        - delete_variant_ids → Soft delete variants (and their sizes/images).
+        - delete_size_ids → Soft delete variant sizes.
+        - delete_variant_image_ids → Soft delete specific variant images by
+          their image id. Images NOT listed here are left untouched —
+          sending new images or other product fields never removes existing
+          images on its own.
+
+        Image submission uses the same contract as CREATE: send
+        multipart/form-data with the product/variant JSON as a string in a
+        'data' field, plus variant_<index>_images file field(s) per variant
+        (index = that variant's position in the 'variants' array inside
+        'data', whether the variant is being updated or newly added in this
+        same request). New images are appended after the current highest
+        display_order for that variant, so existing ordering is preserved.
+        A plain application/json body (no files) continues to work exactly
+        as before.
         """,
         request=UpdateProductSerializer,
     ),

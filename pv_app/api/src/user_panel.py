@@ -1,12 +1,53 @@
+import json
+
 from rest_framework.decorators import api_view, parser_classes
-from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.parsers import JSONParser, MultiPartParser, FormParser
+from rest_framework.exceptions import ValidationError
 from rest_framework import status
 
 from helpers.middleware import user_authentication_required
-from helpers.utils import generic_response_handler
+from helpers.utils import generic_response_handler, validate_image_files
 from pv_app.api.business_logic.bl_user_panel import add_to_cart, create_address, create_category, create_coupon, create_notify_me_request, create_product, delete_address, delete_cart_item, delete_category, delete_coupon, delete_notify_me_request, delete_product, get_addresses, get_cart, get_categories, get_coupons, get_notify_me_requests, get_order_detail, get_order_listing, get_product_detail, get_product_listing, update_address, update_cart_quantity, update_category, update_coupon, update_product
 from pv_app.api.serializer.sz_user_panel import AddToCartSerializer, CouponSerializer, CreateAddressSerializer, CreateCategorySerializer, CreateProductSerializer, NotifyMeSerializer, UpdateAddressSerializer, UpdateCartSerializer, UpdateCategorySerializer, UpdateCouponSerializer, UpdateProductSerializer
 from pv_app.api.swagger.swag_user_panel import address_management_schema, categories_management_schema, products_management_schema, cart_management_schema, coupon_management_schema, notify_me_schema, orders_schema
+
+
+def _parse_product_payload(request):
+    """Product fields are normally sent as a plain JSON body. When the Admin
+    panel needs to attach variant image files, it can't express a nested
+    variants[].images list through multipart/form-data (multipart has no
+    notion of nested list-of-dict fields), so it instead sends the same
+    product/variant JSON as a string in a 'data' field alongside indexed
+    file fields (variant_0_images, variant_1_images, ...). This returns
+    (payload_dict, is_multipart) so the caller knows whether to also look
+    for those indexed file fields.
+    """
+    content_type = request.content_type or ""
+
+    if not content_type.startswith("multipart/form-data"):
+        return request.data, False
+
+    raw_payload = request.data.get("data")
+
+    try:
+        payload = json.loads(raw_payload) if raw_payload else {}
+    except (TypeError, ValueError):
+        raise ValidationError({"data": "Invalid JSON in 'data' field."})
+
+    return payload, True
+
+
+def _attach_variant_image_uploads(validated_data, request):
+    """Pulls each variant's uploaded files out of request.FILES by that
+    variant's position in the submitted 'variants' array (variant_<index>_images)
+    and attaches the validated files onto that variant dict as 'new_images'
+    for the business logic layer to upload/store.
+    """
+    for index, variant in enumerate(validated_data.get("variants", [])):
+        uploads = request.FILES.getlist(f"variant_{index}_images")
+
+        if uploads:
+            variant["new_images"] = validate_image_files(uploads)
 
 
 
@@ -117,6 +158,7 @@ def categories_management(request):
 @products_management_schema
 @user_authentication_required(role_required=[1, 2])
 @api_view(["GET", "POST", "PUT", "DELETE"])
+@parser_classes([JSONParser, MultiPartParser, FormParser])
 @generic_response_handler
 def products_management(request):
 
@@ -130,10 +172,15 @@ def products_management(request):
 
     if request.method == "POST":
 
+        payload, is_multipart = _parse_product_payload(request)
+
         serializer = CreateProductSerializer(
-            data=request.data
+            data=payload
         )
         serializer.is_valid(raise_exception=True)
+
+        if is_multipart:
+            _attach_variant_image_uploads(serializer.validated_data, request)
 
         return create_product(
             serializer.validated_data,
@@ -165,10 +212,15 @@ def products_management(request):
 
     elif request.method == "PUT":
 
+        payload, is_multipart = _parse_product_payload(request)
+
         serializer = UpdateProductSerializer(
-            data=request.data
+            data=payload
         )
         serializer.is_valid(raise_exception=True)
+
+        if is_multipart:
+            _attach_variant_image_uploads(serializer.validated_data, request)
 
         return update_product(
             serializer.validated_data,

@@ -5,7 +5,7 @@ import traceback
 from django.db import connection
 from rest_framework import status
 from django.db import transaction
-from helpers.utils import clamp_page, clamp_page_size, db_query_result_to_json, delete_image_from_imagekit, resolve_pagination, send_restock_notification_email, upload_image_to_imagekit
+from helpers.utils import clamp_page, clamp_page_size, db_query_result_to_json, delete_image_from_storage, resolve_pagination, send_restock_notification_email, upload_image_to_storage
 
 def create_category(data, user_id):
 
@@ -38,7 +38,7 @@ def create_category(data, user_id):
     imagekit_file_id = None
 
     if image:
-        uploaded_image = upload_image_to_imagekit(
+        uploaded_image = upload_image_to_storage(
             image=image,
             folder="/categories"
         )
@@ -263,7 +263,7 @@ def update_category(data, user_id):
     new_upload = None
 
     if image:
-        new_upload = upload_image_to_imagekit(
+        new_upload = upload_image_to_storage(
             image=image,
             folder="/categories"
         )
@@ -308,7 +308,7 @@ def update_category(data, user_id):
     # Only delete the old image once the new one is confirmed committed.
     if new_upload and old_file_id:
         try:
-            delete_image_from_imagekit(old_file_id)
+            delete_image_from_storage(old_file_id)
         except Exception:
             traceback.print_exc()
 
@@ -373,7 +373,7 @@ def delete_category(category_id, user_id):
 
     if imagekit_file_id:
         try:
-            delete_image_from_imagekit(imagekit_file_id)
+            delete_image_from_storage(imagekit_file_id)
         except Exception:
             traceback.print_exc()
 
@@ -1883,7 +1883,7 @@ def create_product(data, user_id):
     tags = data.get("tags", [])
     variants = data.get("variants", [])
 
-    with connection.cursor() as cursor:
+    with transaction.atomic(), connection.cursor() as cursor:
 
             # --------------------------------------------------
             # Product Name Validation
@@ -2218,6 +2218,54 @@ def create_product(data, user_id):
                             )
                             for size in sizes
                         ]
+                    )
+
+                # --------------------------------------------------
+                # Insert Variant Images
+                # --------------------------------------------------
+
+                new_images = variant.get("new_images", [])
+
+                if new_images:
+
+                    image_rows = [
+                        (
+                            variant_id,
+                            upload_image_to_storage(image=image, folder="/products")["url"],
+                            order,
+                            True,
+                            user_id,
+                            user_id
+                        )
+                        for order, image in enumerate(new_images, start=1)
+                    ]
+
+                    cursor.executemany(
+                        """
+                        INSERT INTO product_variant_images
+                        (
+                            variant_id,
+                            image_url,
+                            display_order,
+                            is_active,
+                            created_by,
+                            updated_by,
+                            created_at,
+                            updated_at
+                        )
+                        VALUES
+                        (
+                            %s,
+                            %s,
+                            %s,
+                            %s,
+                            %s,
+                            %s,
+                            NOW(),
+                            NOW()
+                        )
+                        """,
+                        image_rows
                     )
 
     product_data, _ = get_product_detail(
@@ -2640,6 +2688,7 @@ def update_product(data, user_id):
     delete_tag_ids = data.get("delete_tag_ids", [])
     delete_variant_ids = data.get("delete_variant_ids", [])
     delete_size_ids = data.get("delete_size_ids", [])
+    delete_variant_image_ids = data.get("delete_variant_image_ids", [])
 
     try:
 
@@ -2869,6 +2918,43 @@ def update_product(data, user_id):
                             "invalid_size_ids": invalid_size_ids
                         }
                     }, status.HTTP_400_BAD_REQUEST)
+
+            # --------------------------------------------------
+            # Variant Image Ownership Validation (for deletion)
+            # --------------------------------------------------
+
+            if delete_variant_image_ids:
+
+                cursor.execute("""
+                    SELECT pvi.id
+                    FROM product_variant_images pvi
+                    JOIN product_variants pv
+                        ON pv.id = pvi.variant_id
+                    WHERE pvi.id = ANY(%s)
+                    AND pv.product_id = %s
+                    AND pvi.is_deleted = FALSE
+                    AND pv.is_deleted = FALSE
+                """, [delete_variant_image_ids, product_id])
+
+                existing_image_ids = {
+                    row[0]
+                    for row in cursor.fetchall()
+                }
+
+                invalid_image_ids = [
+                    image_id
+                    for image_id in delete_variant_image_ids
+                    if image_id not in existing_image_ids
+                ]
+
+                if invalid_image_ids:
+                    raise _ProductUpdateAborted({
+                        "message": "Invalid delete variant image ids.",
+                        "data": {
+                            "invalid_variant_image_ids": invalid_image_ids
+                        }
+                    }, status.HTTP_400_BAD_REQUEST)
+
             # --------------------------------------------------
             # SKU Validation
             # --------------------------------------------------
@@ -2925,6 +3011,22 @@ def update_product(data, user_id):
                 """, [
                     user_id,
                     delete_size_ids
+                ])
+
+            if delete_variant_image_ids:
+
+                cursor.execute("""
+                    UPDATE product_variant_images
+                    SET
+                        is_deleted = TRUE,
+                        is_active = FALSE,
+                        updated_by = %s,
+                        updated_at = NOW()
+                    WHERE id = ANY(%s)
+                    AND is_deleted = FALSE
+                """, [
+                    user_id,
+                    delete_variant_image_ids
                 ])
 
             # --------------------------------------------------
@@ -3082,6 +3184,23 @@ def update_product(data, user_id):
                 cursor.execute(
                     """
                     UPDATE product_variant_sizes
+                    SET
+                        is_deleted=TRUE,
+                        is_active=FALSE,
+                        updated_by=%s,
+                        updated_at=NOW()
+                    WHERE variant_id = ANY(%s)
+                    AND is_deleted=FALSE
+                    """,
+                    [
+                        user_id,
+                        delete_variant_ids
+                    ]
+                )
+
+                cursor.execute(
+                    """
+                    UPDATE product_variant_images
                     SET
                         is_deleted=TRUE,
                         is_active=FALSE,
@@ -3333,6 +3452,72 @@ def update_product(data, user_id):
                                 user_id
                             ]
                         )
+
+                # --------------------------------------------------
+                # Insert New Variant Images
+                # --------------------------------------------------
+                # Existing images are left untouched here — only
+                # delete_variant_image_ids removes them (above) and new
+                # uploads are appended after whatever display_order is
+                # already in use, so ordering stays stable.
+
+                new_images = variant.get("new_images", [])
+
+                if new_images:
+
+                    cursor.execute(
+                        """
+                        SELECT COALESCE(MAX(display_order), 0)
+                        FROM product_variant_images
+                        WHERE variant_id = %s
+                        AND is_deleted = FALSE
+                        """,
+                        [variant_id]
+                    )
+
+                    next_display_order = cursor.fetchone()[0]
+
+                    image_rows = []
+
+                    for image in new_images:
+                        next_display_order += 1
+
+                        image_rows.append((
+                            variant_id,
+                            upload_image_to_storage(image=image, folder="/products")["url"],
+                            next_display_order,
+                            True,
+                            user_id,
+                            user_id
+                        ))
+
+                    cursor.executemany(
+                        """
+                        INSERT INTO product_variant_images
+                        (
+                            variant_id,
+                            image_url,
+                            display_order,
+                            is_active,
+                            created_by,
+                            updated_by,
+                            created_at,
+                            updated_at
+                        )
+                        VALUES
+                        (
+                            %s,
+                            %s,
+                            %s,
+                            %s,
+                            %s,
+                            %s,
+                            NOW(),
+                            NOW()
+                        )
+                        """,
+                        image_rows
+                    )
 
     except _ProductUpdateAborted as e:
         return e.payload, e.status_code

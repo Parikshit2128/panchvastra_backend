@@ -1,6 +1,6 @@
 from django.db import connection
 from datetime import datetime, timedelta
-from helpers.utils import _store_otp, generate_otp_with_expiry, send_verification_otp, upload_image_to_imagekit
+from helpers.utils import _store_otp, generate_otp_with_expiry, send_verification_otp, upload_image_to_storage
 import jwt
 from datetime import datetime, timedelta, timezone
 
@@ -411,7 +411,7 @@ def update_user_profile_logic(data, user_id):
             values.append(data[field])
 
     if image:
-        uploaded = upload_image_to_imagekit(
+        uploaded = upload_image_to_storage(
             image=image,
             folder="/profile_images"
         )

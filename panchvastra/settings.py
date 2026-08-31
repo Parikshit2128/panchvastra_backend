@@ -301,9 +301,17 @@ BREVO_API_KEY = os.getenv("BREVO_API_KEY")
 
 
 
-IMAGEKIT_PUBLIC_KEY = os.getenv("IMAGEKIT_PUBLIC_KEY")
-IMAGEKIT_PRIVATE_KEY = os.getenv("IMAGEKIT_PRIVATE_KEY")
-IMAGEKIT_URL_ENDPOINT = os.getenv("IMAGEKIT_URL_ENDPOINT")
+# S3-compatible object storage (RustFS), used for category/product images.
+# RUSTFS_ENDPOINT_URL is the S3 API address the app talks to — an internal
+# Docker/Coolify service address if the app and RustFS share a network,
+# otherwise the host-mapped port. RUSTFS_PUBLIC_URL_BASE is the separate,
+# public-facing URL (a domain in front of RustFS) that gets stored as each
+# image's image_url and served to browsers.
+RUSTFS_ENDPOINT_URL = os.getenv("RUSTFS_ENDPOINT_URL")
+RUSTFS_ACCESS_KEY = os.getenv("RUSTFS_ACCESS_KEY")
+RUSTFS_SECRET_KEY = os.getenv("RUSTFS_SECRET_KEY")
+RUSTFS_BUCKET_NAME = os.getenv("RUSTFS_BUCKET_NAME", "panchvastra")
+RUSTFS_PUBLIC_URL_BASE = os.getenv("RUSTFS_PUBLIC_URL_BASE")
 
 
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")

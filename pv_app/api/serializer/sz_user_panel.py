@@ -272,3 +272,9 @@ class UpdateProductSerializer(CreateProductSerializer):
         default=list
     )
 
+    delete_variant_image_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        required=False,
+        default=list
+    )
+
