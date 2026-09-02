@@ -371,6 +371,20 @@ def delete_category(category_id, user_id):
                 ]
             )
 
+            # Cascade: a sub-category can't usefully outlive its category —
+            # create/update_sub_category already refuse to touch one whose
+            # category isn't active, so leaving them active here would just
+            # strand them.
+            cursor.execute(
+                """
+                UPDATE sub_categories
+                SET is_deleted = TRUE
+                WHERE category_id = %s
+                AND is_deleted = FALSE
+                """,
+                [category_id]
+            )
+
     if imagekit_file_id:
         try:
             delete_image_from_storage(imagekit_file_id)
@@ -379,6 +393,335 @@ def delete_category(category_id, user_id):
 
     return {
         "message": "Category deleted successfully.",
+        "data": {}
+    }, status.HTTP_200_OK
+
+
+def create_sub_category(data):
+
+    category_id = data.get("category_id")
+    name = data.get("name")
+    is_active = data.get("is_active", True)
+
+    with connection.cursor() as cursor:
+
+        cursor.execute(
+            """
+            SELECT 1
+            FROM categories
+            WHERE id = %s
+            AND is_deleted = FALSE
+            AND is_active = TRUE
+            """,
+            [category_id]
+        )
+
+        if not cursor.fetchone():
+            return {
+                "message": "Category not found.",
+                "data": {}
+            }, status.HTTP_404_NOT_FOUND
+
+        # Scoped to the category, not global — the same sub-category name
+        # (e.g. "Casual") can legitimately exist under two different
+        # categories (e.g. "Men" and "Women").
+        cursor.execute(
+            """
+            SELECT 1
+            FROM sub_categories
+            WHERE LOWER(name) = LOWER(%s)
+            AND category_id = %s
+            AND is_deleted = FALSE
+            """,
+            [name, category_id]
+        )
+
+        if cursor.fetchone():
+            return {
+                "message": "Sub category already exists.",
+                "data": {}
+            }, status.HTTP_400_BAD_REQUEST
+
+        cursor.execute(
+            """
+            INSERT INTO sub_categories
+            (
+                category_id,
+                name,
+                is_active
+            )
+            VALUES
+            (
+                %s,
+                %s,
+                %s
+            )
+            RETURNING id
+            """,
+            [
+                category_id,
+                name,
+                is_active
+            ]
+        )
+
+        sub_category_id = cursor.fetchone()[0]
+
+    sub_category_data, _ = get_sub_categories(
+        page=1,
+        page_size=1,
+        sub_category_id=sub_category_id
+    )
+
+    return {
+        "message": "Sub category created successfully.",
+        "data": sub_category_data.get("data")
+    }, status.HTTP_201_CREATED
+
+
+
+def get_sub_categories(
+    page=1,
+    page_size=10,
+    sub_category_id=None,
+    category_id=None,
+    search=None
+):
+
+    select_columns = [
+        "id",
+        "category_id",
+        "name",
+        "is_active"
+    ]
+
+    columns_str = ", ".join(select_columns)
+
+    params = []
+
+    where_clause = """
+        WHERE is_deleted = FALSE
+    """
+
+    if sub_category_id:
+        where_clause += " AND id = %s"
+        params.append(sub_category_id)
+
+    if category_id:
+        where_clause += " AND category_id = %s"
+        params.append(category_id)
+
+    if search:
+        where_clause += " AND name ILIKE %s"
+        params.append(f"%{search}%")
+
+    with connection.cursor() as cursor:
+
+        cursor.execute(f"SELECT COUNT(*) FROM sub_categories {where_clause}", params)
+
+        total_records = cursor.fetchone()[0]
+
+        if total_records == 0:
+            return {
+                "message": "Sub category not found." if sub_category_id else "Data not found.",
+                "data": {} if sub_category_id else []
+            }, (
+                status.HTTP_404_NOT_FOUND
+                if sub_category_id
+                else status.HTTP_200_OK
+            )
+
+        page, page_size, offset, pagination = resolve_pagination(page, page_size, total_records)
+
+        cursor.execute(
+            f"""
+            SELECT {columns_str}
+            FROM sub_categories
+            {where_clause}
+            ORDER BY id DESC
+            LIMIT %s OFFSET %s
+            """,
+            params + [page_size, offset]
+        )
+
+        result = [
+            db_query_result_to_json(
+                row,
+                select_columns
+            )
+            for row in cursor.fetchall()
+        ]
+
+        if sub_category_id:
+            return {
+                "message": "Data fetched successfully.",
+                "data": result[0]
+            }, status.HTTP_200_OK
+
+        return {
+            "message": "Data fetched successfully.",
+            "data": result,
+            "pagination": pagination
+        }, status.HTTP_200_OK
+
+
+
+def update_sub_category(data):
+
+    sub_category_id = data.get("id")
+
+    updatable_fields = [
+        "category_id",
+        "name",
+        "is_active"
+    ]
+
+    with connection.cursor() as cursor:
+
+        cursor.execute(
+            """
+            SELECT category_id
+            FROM sub_categories
+            WHERE id = %s
+            AND is_deleted = FALSE
+            """,
+            [sub_category_id]
+        )
+
+        row = cursor.fetchone()
+
+        if not row:
+            return {
+                "message": "Sub category not found.",
+                "data": {}
+            }, status.HTTP_404_NOT_FOUND
+
+        current_category_id = row[0]
+
+    target_category_id = data.get("category_id", current_category_id)
+
+    if "category_id" in data:
+
+        with connection.cursor() as cursor:
+
+            cursor.execute(
+                """
+                SELECT 1
+                FROM categories
+                WHERE id = %s
+                AND is_deleted = FALSE
+                AND is_active = TRUE
+                """,
+                [target_category_id]
+            )
+
+            if not cursor.fetchone():
+                return {
+                    "message": "Category not found.",
+                    "data": {}
+                }, status.HTTP_404_NOT_FOUND
+
+    set_parts = []
+    values = []
+
+    for field in updatable_fields:
+
+        if field in data:
+
+            if field == "name":
+
+                with connection.cursor() as cursor:
+
+                    cursor.execute(
+                        """
+                        SELECT 1
+                        FROM sub_categories
+                        WHERE LOWER(name) = LOWER(%s)
+                        AND category_id = %s
+                        AND id <> %s
+                        AND is_deleted = FALSE
+                        """,
+                        [
+                            data[field],
+                            target_category_id,
+                            sub_category_id
+                        ]
+                    )
+
+                    if cursor.fetchone():
+                        return {
+                            "message": "Sub category already exists.",
+                            "data": {}
+                        }, status.HTTP_400_BAD_REQUEST
+
+            set_parts.append(f"{field} = %s")
+            values.append(data[field])
+
+    if not set_parts:
+        return {
+            "message": "No fields to update.",
+            "data": {}
+        }, status.HTTP_400_BAD_REQUEST
+
+    values.append(sub_category_id)
+
+    sql = f"""
+        UPDATE sub_categories
+        SET {', '.join(set_parts)}
+        WHERE id = %s
+        AND is_deleted = FALSE
+    """
+
+    with connection.cursor() as cursor:
+
+        cursor.execute(sql, values)
+
+        if cursor.rowcount == 0:
+            return {
+                "message": "Sub category not found.",
+                "data": {}
+            }, status.HTTP_404_NOT_FOUND
+
+    sub_category_data, _ = get_sub_categories(
+        page=1,
+        page_size=1,
+        sub_category_id=sub_category_id
+    )
+
+    return {
+        "message": "Sub category updated successfully.",
+        "data": sub_category_data.get("data")
+    }, status.HTTP_200_OK
+
+
+def delete_sub_category(sub_category_id):
+
+    if not sub_category_id:
+        return {
+            "message": "id is required.",
+            "data": {}
+        }, status.HTTP_400_BAD_REQUEST
+
+    with connection.cursor() as cursor:
+
+        cursor.execute(
+            """
+            UPDATE sub_categories
+            SET is_deleted = TRUE
+            WHERE id = %s
+            AND is_deleted = FALSE
+            """,
+            [sub_category_id]
+        )
+
+        if cursor.rowcount == 0:
+            return {
+                "message": "Sub category not found.",
+                "data": {}
+            }, status.HTTP_404_NOT_FOUND
+
+    return {
+        "message": "Sub category deleted successfully.",
         "data": {}
     }, status.HTTP_200_OK
 

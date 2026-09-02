@@ -13,6 +13,18 @@ class UpdateCategorySerializer(serializers.Serializer):
     name = serializers.CharField(max_length=255, required=False)
     description = serializers.CharField(required=False, allow_blank=True)
     image = serializers.ImageField(required=False)
+
+
+class CreateSubCategorySerializer(serializers.Serializer):
+    category_id = serializers.IntegerField()
+    name = serializers.CharField(max_length=255)
+    is_active = serializers.BooleanField(required=False, default=True)
+
+
+class UpdateSubCategorySerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    category_id = serializers.IntegerField(required=False)
+    name = serializers.CharField(max_length=255, required=False)
     is_active = serializers.BooleanField(required=False)
     
 
@@ -267,12 +279,27 @@ class ProductImageUploadSerializer(serializers.Serializer):
         child=serializers.ImageField(),
         required=False,
         help_text=(
-            "Image files for variants[0] in 'data'. For additional "
-            "variants, add more fields named variant_1_images, "
-            "variant_2_images, ... matching each variant's zero-based "
-            "position in the 'variants' array (works for brand-new "
-            "variants too — they don't need an id yet). No limit on "
-            "images per variant."
+            "Image files for variants[0] in 'data'. Matches each variant's "
+            "zero-based position in the 'variants' array (works for "
+            "brand-new variants too — they don't need an id yet). No "
+            "limit on images per variant."
+        )
+    )
+
+    variant_1_images = serializers.ListField(
+        child=serializers.ImageField(),
+        required=False,
+        help_text="Image files for variants[1] in 'data'. Same pattern as variant_0_images."
+    )
+
+    variant_2_images = serializers.ListField(
+        child=serializers.ImageField(),
+        required=False,
+        help_text=(
+            "Image files for variants[2] in 'data'. Same pattern as "
+            "variant_0_images. For a 4th+ variant, this Swagger form runs "
+            "out of fields — use 'Copy as cURL' from a filled-in request "
+            "here and add more variant_<index>_images fields by hand."
         )
     )
 

@@ -5,7 +5,7 @@ from drf_spectacular.utils import (
     OpenApiTypes
 )
 
-from pv_app.api.serializer.sz_user_panel import AddToCartSerializer, CouponSerializer, CreateAddressSerializer, CreateCategorySerializer, CreateProductSerializer, NotifyMeSerializer, ProductImageUploadSerializer, UpdateAddressSerializer, UpdateCartSerializer, UpdateCategorySerializer, UpdateCouponSerializer, UpdateProductSerializer
+from pv_app.api.serializer.sz_user_panel import AddToCartSerializer, CouponSerializer, CreateAddressSerializer, CreateCategorySerializer, CreateProductSerializer, CreateSubCategorySerializer, NotifyMeSerializer, ProductImageUploadSerializer, UpdateAddressSerializer, UpdateCartSerializer, UpdateCategorySerializer, UpdateCouponSerializer, UpdateProductSerializer, UpdateSubCategorySerializer
 
 
 categories_management_schema = extend_schema_view(
@@ -55,6 +55,72 @@ categories_management_schema = extend_schema_view(
     delete=extend_schema(
         tags=["Categories"],
         description="Soft delete a category.",
+        parameters=[
+            OpenApiParameter(
+                name="id",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=True
+            )
+        ],
+    ),
+)
+
+
+sub_categories_management_schema = extend_schema_view(
+    get=extend_schema(
+        tags=["Sub Categories"],
+        description="Get sub category details. Fetch a specific sub category using id, all sub categories under a category, or all sub categories.",
+        parameters=[
+            OpenApiParameter(
+                name="page",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False
+            ),
+            OpenApiParameter(
+                name="page_size",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False
+            ),
+            OpenApiParameter(
+                name="id",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False
+            ),
+            OpenApiParameter(
+                name="category_id",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description="Filter by parent category ID"
+            ),
+            OpenApiParameter(
+                name="search_parameter",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                required=False
+            )
+        ],
+    ),
+
+    post=extend_schema(
+        tags=["Sub Categories"],
+        description="Create a new sub category under a category.",
+        request=CreateSubCategorySerializer,
+    ),
+
+    put=extend_schema(
+        tags=["Sub Categories"],
+        description="Update an existing sub category.",
+        request=UpdateSubCategorySerializer,
+    ),
+
+    delete=extend_schema(
+        tags=["Sub Categories"],
+        description="Soft delete a sub category.",
         parameters=[
             OpenApiParameter(
                 name="id",
