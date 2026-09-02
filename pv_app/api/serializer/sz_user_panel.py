@@ -243,6 +243,36 @@ class NotifyMeSerializer(serializers.Serializer):
     variant_size_id = serializers.IntegerField(required=True)
 
 
+class ProductImageUploadSerializer(serializers.Serializer):
+    """Documents the multipart/form-data shape for Create/Update Product
+    when attaching variant image files — a separate, honest schema from
+    CreateProductSerializer/UpdateProductSerializer because multipart can't
+    express a nested variants[].images list of files the way JSON can.
+    """
+
+    data = serializers.CharField(
+        help_text=(
+            "The full product payload as a JSON string, same shape as the "
+            "application/json request body (CreateProductSerializer for "
+            "POST, UpdateProductSerializer for PUT). variants[].images is "
+            "not part of this JSON — attach files separately below."
+        )
+    )
+
+    variant_0_images = serializers.ListField(
+        child=serializers.ImageField(),
+        required=False,
+        help_text=(
+            "Image files for variants[0] in 'data'. For additional "
+            "variants, add more fields named variant_1_images, "
+            "variant_2_images, ... matching each variant's zero-based "
+            "position in the 'variants' array (works for brand-new "
+            "variants too — they don't need an id yet). No limit on "
+            "images per variant."
+        )
+    )
+
+
 class UpdateProductSerializer(CreateProductSerializer):
 
     id = serializers.IntegerField()

@@ -5,7 +5,7 @@ from drf_spectacular.utils import (
     OpenApiTypes
 )
 
-from pv_app.api.serializer.sz_user_panel import AddToCartSerializer, CouponSerializer, CreateAddressSerializer, CreateCategorySerializer, CreateProductSerializer, NotifyMeSerializer, UpdateAddressSerializer, UpdateCartSerializer, UpdateCategorySerializer, UpdateCouponSerializer, UpdateProductSerializer
+from pv_app.api.serializer.sz_user_panel import AddToCartSerializer, CouponSerializer, CreateAddressSerializer, CreateCategorySerializer, CreateProductSerializer, NotifyMeSerializer, ProductImageUploadSerializer, UpdateAddressSerializer, UpdateCartSerializer, UpdateCategorySerializer, UpdateCouponSerializer, UpdateProductSerializer
 
 
 categories_management_schema = extend_schema_view(
@@ -190,7 +190,10 @@ products_management_schema = extend_schema_view(
         display_order is assigned automatically in submission order,
         starting at 1 for a new product/variant.
         """,
-        request=CreateProductSerializer,
+        request={
+            "application/json": CreateProductSerializer,
+            "multipart/form-data": ProductImageUploadSerializer,
+        },
     ),
 
     put=extend_schema(
@@ -219,7 +222,10 @@ products_management_schema = extend_schema_view(
         A plain application/json body (no files) continues to work exactly
         as before.
         """,
-        request=UpdateProductSerializer,
+        request={
+            "application/json": UpdateProductSerializer,
+            "multipart/form-data": ProductImageUploadSerializer,
+        },
     ),
 
     delete=extend_schema(
