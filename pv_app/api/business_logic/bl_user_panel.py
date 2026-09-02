@@ -1996,6 +1996,7 @@ def create_product(data, user_id):
             sku_list = [
                 variant["sku"]
                 for variant in variants
+                if variant.get("sku")
             ]
 
             if sku_list:
@@ -2163,7 +2164,7 @@ def create_product(data, user_id):
                     """,
                     [
                         product_id,
-                        variant["sku"],
+                        variant.get("sku"),
                         variant["color"],
                         variant["mrp"],
                         variant["selling_price"],
@@ -2962,6 +2963,7 @@ def update_product(data, user_id):
             sku_list = [
                 variant["sku"]
                 for variant in variants
+                if variant.get("sku")
             ]
 
             if sku_list:
@@ -3262,7 +3264,7 @@ def update_product(data, user_id):
                         AND is_deleted=FALSE
                         """,
                         [
-                            variant["sku"],
+                            variant.get("sku"),
                             variant["color"],
                             variant["mrp"],
                             variant["selling_price"],
@@ -3313,7 +3315,7 @@ def update_product(data, user_id):
                         """,
                         [
                             product_id,
-                            variant["sku"],
+                            variant.get("sku"),
                             variant["color"],
                             variant["mrp"],
                             variant["selling_price"],

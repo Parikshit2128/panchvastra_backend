@@ -117,7 +117,11 @@ class ProductVariantSerializer(serializers.Serializer):
         allow_null=True
     )
 
-    sku = serializers.CharField(max_length=100)
+    sku = serializers.CharField(
+        max_length=100,
+        required=False,
+        allow_null=True
+    )
 
     color = serializers.CharField(max_length=100)
 
