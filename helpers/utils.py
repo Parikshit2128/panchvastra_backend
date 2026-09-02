@@ -464,12 +464,26 @@ def upload_image_to_storage(image, folder):
     if getattr(image, "content_type", None):
         extra_args["ContentType"] = image.content_type
 
-    _get_s3_client().upload_fileobj(
-        image,
-        RUSTFS_BUCKET_NAME,
-        object_key,
-        ExtraArgs=extra_args
-    )
+    try:
+        _get_s3_client().upload_fileobj(
+            image,
+            RUSTFS_BUCKET_NAME,
+            object_key,
+            ExtraArgs=extra_args
+        )
+    except Exception as e:
+        # Storage is a network boundary (RustFS down, bad credentials, a
+        # blip) — without this, any failure here fell through as an opaque,
+        # unexplained 500. Logged in full server-side, but the client only
+        # ever needs to know the upload didn't go through.
+        print(
+            f"[upload_image_to_storage] FAILED uploading '{object_key}' "
+            f"to bucket '{RUSTFS_BUCKET_NAME}' at endpoint '{RUSTFS_ENDPOINT_URL}': "
+            f"{type(e).__name__}: {e}",
+            flush=True
+        )
+        traceback.print_exc()
+        raise ValidationError({"images": "Failed to upload image. Please try again."})
 
     return {
         "url": f"{RUSTFS_PUBLIC_URL_BASE.rstrip('/')}/{object_key}",
