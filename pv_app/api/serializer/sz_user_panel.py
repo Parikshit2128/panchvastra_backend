@@ -352,3 +352,18 @@ class UpdateProductSerializer(CreateProductSerializer):
         default=list
     )
 
+
+class UpdateOrderStatusSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    order_status = serializers.ChoiceField(choices=[
+        "PLACED",
+        "CONFIRMED",
+        "PACKED",
+        "SHIPPED",
+        "OUT_FOR_DELIVERY",
+        "DELIVERED",
+        "CANCELLED"
+    ])
+    tracking_id = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    courier_name = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+

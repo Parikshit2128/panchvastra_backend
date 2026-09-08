@@ -5,7 +5,7 @@ from drf_spectacular.utils import (
     OpenApiTypes
 )
 
-from pv_app.api.serializer.sz_user_panel import AddToCartSerializer, CouponSerializer, CreateAddressSerializer, CreateAuthCarouselImageSerializer, CreateCategorySerializer, CreateProductSerializer, CreateSubCategorySerializer, NotifyMeSerializer, ProductImageUploadSerializer, UpdateAddressSerializer, UpdateAuthCarouselImageSerializer, UpdateCartSerializer, UpdateCategorySerializer, UpdateCouponSerializer, UpdateProductSerializer, UpdateSubCategorySerializer
+from pv_app.api.serializer.sz_user_panel import AddToCartSerializer, CouponSerializer, CreateAddressSerializer, CreateAuthCarouselImageSerializer, CreateCategorySerializer, CreateProductSerializer, CreateSubCategorySerializer, NotifyMeSerializer, ProductImageUploadSerializer, UpdateAddressSerializer, UpdateAuthCarouselImageSerializer, UpdateCartSerializer, UpdateCategorySerializer, UpdateCouponSerializer, UpdateOrderStatusSerializer, UpdateProductSerializer, UpdateSubCategorySerializer
 
 
 auth_carousel_schema = extend_schema_view(
@@ -591,8 +591,10 @@ orders_schema = extend_schema_view(
         tags=["Order History"],
         summary="Retrieve orders",
         description=(
-            "Returns all orders for the authenticated user or fetches a specific order "
-            "using its unique ID."
+            "Returns orders for the authenticated user, or fetches a specific "
+            "order by id. An admin token returns orders across every "
+            "customer instead of just their own, and can open any order's "
+            "detail regardless of who placed it."
         ),
         parameters=[
             OpenApiParameter(
@@ -614,11 +616,31 @@ orders_schema = extend_schema_view(
                 required=False
             ),
             OpenApiParameter(
-                name="status",
+                name="order_type",
                 type=OpenApiTypes.STR,
                 location=OpenApiParameter.QUERY,
-                required=False
+                required=False,
+                description="'current' (PLACED/CONFIRMED/PACKED/SHIPPED/OUT_FOR_DELIVERY) or 'history' (DELIVERED/CANCELLED)."
+            ),
+            OpenApiParameter(
+                name="search_parameter",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description="Admin only — search by order number, customer name, or email."
             ),
         ],
+    ),
+
+    put=extend_schema(
+        tags=["Order History"],
+        summary="Update order status",
+        description=(
+            "Update an order's status (and optionally tracking_id / "
+            "courier_name). Admin only. shipped_at / delivered_at / "
+            "cancelled_at are stamped automatically the first time that "
+            "status is reached."
+        ),
+        request=UpdateOrderStatusSerializer,
     ),
 )

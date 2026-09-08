@@ -2542,6 +2542,75 @@ def get_order_detail(order_id, user_id=None):
 
 
 
+def update_order_status(data):
+
+    order_id = data.get("id")
+    new_status = data.get("order_status")
+    tracking_id = data.get("tracking_id")
+    courier_name = data.get("courier_name")
+
+    with connection.cursor() as cursor:
+
+        cursor.execute(
+            """
+            SELECT 1
+            FROM orders
+            WHERE id = %s
+            AND is_deleted = FALSE
+            """,
+            [order_id]
+        )
+
+        if not cursor.fetchone():
+            return {
+                "message": "Order not found.",
+                "data": {}
+            }, status.HTTP_404_NOT_FOUND
+
+    set_parts = [
+        "order_status = %s",
+        "updated_at = NOW()"
+    ]
+    values = [new_status]
+
+    # Stamp the milestone timestamp the first time a status is reached;
+    # COALESCE means re-saving the same status later doesn't overwrite it.
+    if new_status == "SHIPPED":
+        set_parts.append("shipped_at = COALESCE(shipped_at, NOW())")
+    elif new_status == "DELIVERED":
+        set_parts.append("delivered_at = COALESCE(delivered_at, NOW())")
+    elif new_status == "CANCELLED":
+        set_parts.append("cancelled_at = COALESCE(cancelled_at, NOW())")
+
+    if tracking_id is not None:
+        set_parts.append("tracking_id = %s")
+        values.append(tracking_id)
+
+    if courier_name is not None:
+        set_parts.append("courier_name = %s")
+        values.append(courier_name)
+
+    values.append(order_id)
+
+    sql = f"""
+        UPDATE orders
+        SET {', '.join(set_parts)}
+        WHERE id = %s
+        AND is_deleted = FALSE
+    """
+
+    with connection.cursor() as cursor:
+        cursor.execute(sql, values)
+
+    order_data, _ = get_order_detail(order_id=order_id)
+
+    return {
+        "message": "Order status updated successfully.",
+        "data": order_data.get("data")
+    }, status.HTTP_200_OK
+
+
+
 @transaction.atomic
 def create_product(data, user_id):
 
