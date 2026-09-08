@@ -7,9 +7,9 @@ from rest_framework import status
 
 from helpers.middleware import user_authentication_required
 from helpers.utils import generic_response_handler, validate_image_files
-from pv_app.api.business_logic.bl_user_panel import add_to_cart, create_address, create_category, create_coupon, create_notify_me_request, create_product, create_sub_category, delete_address, delete_cart_item, delete_category, delete_coupon, delete_notify_me_request, delete_product, delete_sub_category, get_addresses, get_cart, get_categories, get_coupons, get_notify_me_requests, get_order_detail, get_order_listing, get_product_detail, get_product_listing, get_sub_categories, update_address, update_cart_quantity, update_category, update_coupon, update_product, update_sub_category
-from pv_app.api.serializer.sz_user_panel import AddToCartSerializer, CouponSerializer, CreateAddressSerializer, CreateCategorySerializer, CreateProductSerializer, CreateSubCategorySerializer, NotifyMeSerializer, UpdateAddressSerializer, UpdateCartSerializer, UpdateCategorySerializer, UpdateCouponSerializer, UpdateProductSerializer, UpdateSubCategorySerializer
-from pv_app.api.swagger.swag_user_panel import address_management_schema, categories_management_schema, products_management_schema, cart_management_schema, coupon_management_schema, notify_me_schema, orders_schema, sub_categories_management_schema
+from pv_app.api.business_logic.bl_user_panel import add_to_cart, create_address, create_auth_carousel_image, create_category, create_coupon, create_notify_me_request, create_product, create_sub_category, delete_address, delete_auth_carousel_image, delete_cart_item, delete_category, delete_coupon, delete_notify_me_request, delete_product, delete_sub_category, get_addresses, get_auth_carousel_images, get_cart, get_categories, get_coupons, get_notify_me_requests, get_order_detail, get_order_listing, get_product_detail, get_product_listing, get_sub_categories, update_address, update_auth_carousel_image, update_cart_quantity, update_category, update_coupon, update_product, update_sub_category
+from pv_app.api.serializer.sz_user_panel import AddToCartSerializer, CouponSerializer, CreateAddressSerializer, CreateAuthCarouselImageSerializer, CreateCategorySerializer, CreateProductSerializer, CreateSubCategorySerializer, NotifyMeSerializer, UpdateAddressSerializer, UpdateAuthCarouselImageSerializer, UpdateCartSerializer, UpdateCategorySerializer, UpdateCouponSerializer, UpdateProductSerializer, UpdateSubCategorySerializer
+from pv_app.api.swagger.swag_user_panel import address_management_schema, auth_carousel_schema, categories_management_schema, products_management_schema, cart_management_schema, coupon_management_schema, notify_me_schema, orders_schema, sub_categories_management_schema
 
 
 def _parse_product_payload(request):
@@ -48,6 +48,60 @@ def _attach_variant_image_uploads(validated_data, request):
 
         if uploads:
             variant["new_images"] = validate_image_files(uploads)
+
+
+
+@auth_carousel_schema
+@user_authentication_required(role_required=[1, 2], public_methods=["GET"])
+@api_view(["GET", "POST", "PUT", "DELETE"])
+@parser_classes([MultiPartParser, FormParser])
+@generic_response_handler
+def auth_carousel(request):
+
+    if request.method in ("POST", "PUT", "DELETE") and request.role_id != 1:
+        return {
+            "message": "You are not authorized to perform this action.",
+            "data": {}
+        }, status.HTTP_403_FORBIDDEN
+
+    if request.method == "POST":
+        serializer = CreateAuthCarouselImageSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        return create_auth_carousel_image(
+            serializer.validated_data,
+            request.user_id
+        )
+
+    elif request.method == "GET":
+        carousel_id = request.GET.get("id")
+
+        # Only an authenticated admin sees inactive images too (so the
+        # admin panel can find and re-activate one) — the public storefront
+        # and an unauthenticated request only ever see active images.
+        include_inactive = request.role_id == 1
+
+        return get_auth_carousel_images(
+            carousel_id=carousel_id,
+            include_inactive=include_inactive
+        )
+
+    elif request.method == "PUT":
+        serializer = UpdateAuthCarouselImageSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        return update_auth_carousel_image(
+            serializer.validated_data,
+            request.user_id
+        )
+
+    elif request.method == "DELETE":
+        carousel_id = request.GET.get("id")
+
+        return delete_auth_carousel_image(
+            carousel_id,
+            request.user_id
+        )
 
 
 
@@ -518,26 +572,30 @@ def notify_me_management(request):
 @generic_response_handler
 def orders(request):
 
-    user_id = request.user_id
-    # user_id= 1
+    is_admin = request.role_id == 1
 
     order_id = request.GET.get("id")
     page = request.GET.get("page", 1)
     page_size = request.GET.get("page_size", 10)
-    order_type=request.GET.get("order_type")
-    
+    order_type = request.GET.get("order_type")
+    search = request.GET.get("search_parameter")
+
+    # A customer only ever sees their own orders. An admin sees every order,
+    # across all customers — user_id=None lifts that scoping.
+    scoped_user_id = None if is_admin else request.user_id
 
     if order_id:
         return get_order_detail(
-            user_id=user_id,
-            order_id=order_id
+            order_id=order_id,
+            user_id=scoped_user_id
         )
 
     return get_order_listing(
-        user_id=user_id,
+        user_id=scoped_user_id,
         page=page,
         page_size=page_size,
-        order_type=order_type
+        order_type=order_type,
+        search=search if is_admin else None
     )
 
 

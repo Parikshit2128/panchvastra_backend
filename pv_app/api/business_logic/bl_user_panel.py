@@ -397,6 +397,310 @@ def delete_category(category_id, user_id):
     }, status.HTTP_200_OK
 
 
+def create_auth_carousel_image(data, user_id):
+
+    image = data.get("image")
+    display_order = data.get("display_order")
+    is_active = data.get("is_active", True)
+
+    uploaded_image = upload_image_to_storage(
+        image=image,
+        folder="/auth-carousel"
+    )
+
+    with connection.cursor() as cursor:
+
+        if display_order is None:
+            cursor.execute(
+                """
+                SELECT COALESCE(MAX(display_order), 0)
+                FROM auth_carousel_images
+                WHERE is_deleted = FALSE
+                """
+            )
+            display_order = cursor.fetchone()[0] + 1
+
+        cursor.execute(
+            """
+            INSERT INTO auth_carousel_images
+            (
+                image_url,
+                file_id,
+                display_order,
+                is_active,
+                created_by,
+                updated_by,
+                created_at,
+                updated_at
+            )
+            VALUES
+            (
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                NOW(),
+                NOW()
+            )
+            RETURNING id
+            """,
+            [
+                uploaded_image["url"],
+                uploaded_image["file_id"],
+                display_order,
+                is_active,
+                user_id,
+                user_id
+            ]
+        )
+
+        carousel_id = cursor.fetchone()[0]
+
+    carousel_data, _ = get_auth_carousel_images(
+        carousel_id=carousel_id,
+        include_inactive=True
+    )
+
+    return {
+        "message": "Carousel image created successfully.",
+        "data": carousel_data.get("data")
+    }, status.HTTP_201_CREATED
+
+
+
+def get_auth_carousel_images(carousel_id=None, include_inactive=False):
+
+    select_columns = [
+        "id",
+        "image_url",
+        "display_order",
+        "is_active"
+    ]
+
+    columns_str = ", ".join(select_columns)
+
+    params = []
+
+    where_clause = "WHERE is_deleted = FALSE"
+
+    if not include_inactive:
+        where_clause += " AND is_active = TRUE"
+
+    if carousel_id:
+        where_clause += " AND id = %s"
+        params.append(carousel_id)
+
+    with connection.cursor() as cursor:
+
+        cursor.execute(
+            f"""
+            SELECT {columns_str}
+            FROM auth_carousel_images
+            {where_clause}
+            ORDER BY display_order ASC
+            """,
+            params
+        )
+
+        result = [
+            db_query_result_to_json(row, select_columns)
+            for row in cursor.fetchall()
+        ]
+
+    if carousel_id:
+        if not result:
+            return {
+                "message": "Carousel image not found.",
+                "data": {}
+            }, status.HTTP_404_NOT_FOUND
+
+        return {
+            "message": "Data fetched successfully.",
+            "data": result[0]
+        }, status.HTTP_200_OK
+
+    if not result:
+        return {
+            "message": "Data not found.",
+            "data": []
+        }, status.HTTP_200_OK
+
+    return {
+        "message": "Data fetched successfully.",
+        "data": result
+    }, status.HTTP_200_OK
+
+
+
+def update_auth_carousel_image(data, user_id):
+
+    carousel_id = data.get("id")
+
+    image = data.get("image")
+
+    updatable_fields = [
+        "display_order",
+        "is_active"
+    ]
+
+    with connection.cursor() as cursor:
+
+        cursor.execute(
+            """
+            SELECT file_id
+            FROM auth_carousel_images
+            WHERE id = %s
+            AND is_deleted = FALSE
+            """,
+            [carousel_id]
+        )
+
+        row = cursor.fetchone()
+
+        if not row:
+            return {
+                "message": "Carousel image not found.",
+                "data": {}
+            }, status.HTTP_404_NOT_FOUND
+
+        old_file_id = row[0]
+
+    set_parts = []
+    values = []
+
+    for field in updatable_fields:
+        if field in data:
+            set_parts.append(f"{field} = %s")
+            values.append(data[field])
+
+    # Upload the replacement image (if any) before touching the DB, but don't
+    # delete the old one yet — if the DB update below fails, the old image
+    # must still be recoverable.
+    new_upload = None
+
+    if image:
+        new_upload = upload_image_to_storage(
+            image=image,
+            folder="/auth-carousel"
+        )
+
+        set_parts.append("image_url = %s")
+        values.append(new_upload["url"])
+
+        set_parts.append("file_id = %s")
+        values.append(new_upload["file_id"])
+
+    if not set_parts:
+        return {
+            "message": "No fields to update.",
+            "data": {}
+        }, status.HTTP_400_BAD_REQUEST
+
+    set_parts.append("updated_by = %s")
+    values.append(user_id)
+
+    set_parts.append("updated_at = NOW()")
+
+    values.append(carousel_id)
+
+    sql = f"""
+        UPDATE auth_carousel_images
+        SET {', '.join(set_parts)}
+        WHERE id = %s
+        AND is_deleted = FALSE
+    """
+
+    with transaction.atomic():
+        with connection.cursor() as cursor:
+
+            cursor.execute(sql, values)
+
+            if cursor.rowcount == 0:
+                return {
+                    "message": "Carousel image not found.",
+                    "data": {}
+                }, status.HTTP_404_NOT_FOUND
+
+    # Only delete the old image once the new one is confirmed committed.
+    if new_upload and old_file_id:
+        try:
+            delete_image_from_storage(old_file_id)
+        except Exception:
+            traceback.print_exc()
+
+    carousel_data, _ = get_auth_carousel_images(
+        carousel_id=carousel_id,
+        include_inactive=True
+    )
+
+    return {
+        "message": "Carousel image updated successfully.",
+        "data": carousel_data.get("data")
+    }, status.HTTP_200_OK
+
+
+
+def delete_auth_carousel_image(carousel_id, user_id):
+
+    if not carousel_id:
+        return {
+            "message": "id is required.",
+            "data": {}
+        }, status.HTTP_400_BAD_REQUEST
+
+    with transaction.atomic():
+        with connection.cursor() as cursor:
+
+            cursor.execute(
+                """
+                SELECT file_id
+                FROM auth_carousel_images
+                WHERE id = %s
+                AND is_deleted = FALSE
+                """,
+                [carousel_id]
+            )
+
+            row = cursor.fetchone()
+
+            if not row:
+                return {
+                    "message": "Carousel image not found.",
+                    "data": {}
+                }, status.HTTP_404_NOT_FOUND
+
+            file_id = row[0]
+
+            cursor.execute(
+                """
+                UPDATE auth_carousel_images
+                SET
+                    is_deleted = TRUE,
+                    updated_by = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                AND is_deleted = FALSE
+                """,
+                [
+                    user_id,
+                    carousel_id
+                ]
+            )
+
+    if file_id:
+        try:
+            delete_image_from_storage(file_id)
+        except Exception:
+            traceback.print_exc()
+
+    return {
+        "message": "Carousel image deleted successfully.",
+        "data": {}
+    }, status.HTTP_200_OK
+
+
 def create_sub_category(data):
 
     category_id = data.get("category_id")
@@ -1808,10 +2112,11 @@ def delete_coupon(coupon_id, user_id):
 
 
 def get_order_listing(
-    user_id,
+    user_id=None,
     page=1,
     page_size=10,
-    order_type=None
+    order_type=None,
+    search=None
 ):
 
     page = clamp_page(page)
@@ -1819,12 +2124,17 @@ def get_order_listing(
     offset = (page - 1) * page_size
 
     where_conditions = [
-        "o.user_id = %s",
         "o.is_deleted = FALSE",
         "o.is_active = TRUE"
     ]
 
-    params = [user_id]
+    params = []
+
+    # A regular user only ever sees their own orders; passing user_id=None
+    # (admin callers) returns every order, across all customers.
+    if user_id is not None:
+        where_conditions.append("o.user_id = %s")
+        params.append(user_id)
 
     if order_type == "current":
         where_conditions.append("""
@@ -1844,6 +2154,18 @@ def get_order_listing(
                 'CANCELLED'
             )
         """)
+
+    # Only meaningful for the admin listing (a customer already knows which
+    # orders are theirs), but harmless either way.
+    if search:
+        where_conditions.append("""
+            (
+                o.order_number ILIKE %s
+                OR o.customer_name ILIKE %s
+                OR o.customer_email ILIKE %s
+            )
+        """)
+        params.extend([f"%{search}%"] * 3)
 
     where_clause = " AND ".join(where_conditions)
 
@@ -1869,6 +2191,9 @@ def get_order_listing(
 
             o.id,
             o.order_number,
+            o.customer_name,
+            o.customer_email,
+            o.customer_mobile,
             o.order_status,
             o.payment_status,
             o.payment_method,
@@ -1996,9 +2321,25 @@ def get_order_listing(
 
 
 
-def get_order_detail(user_id, order_id):
+def get_order_detail(order_id, user_id=None):
 
-    order_sql = """
+    where_conditions = [
+        "o.id=%s",
+        "o.is_deleted=FALSE",
+        "o.is_active=TRUE"
+    ]
+
+    params = [order_id]
+
+    # A regular user can only open their own order; passing user_id=None
+    # (admin callers) allows fetching any order by id.
+    if user_id is not None:
+        where_conditions.append("o.user_id=%s")
+        params.append(user_id)
+
+    where_clause = " AND ".join(where_conditions)
+
+    order_sql = f"""
         SELECT
             o.id,
             o.order_number,
@@ -2035,23 +2376,20 @@ def get_order_detail(user_id, order_id):
 
         FROM public.orders o
 
-        WHERE
-            o.id=%s
-            AND o.user_id=%s
-            AND o.is_deleted=FALSE
-            AND o.is_active=TRUE
+        WHERE {where_clause}
 
         LIMIT 1
     """
 
     with connection.cursor() as cursor:
-        cursor.execute(order_sql, [order_id, user_id])
+        cursor.execute(order_sql, params)
 
         row = cursor.fetchone()
 
         if not row:
             return {
-                "message": "Order not found."
+                "message": "Order not found.",
+                "data": {}
             }, status.HTTP_404_NOT_FOUND
 
         columns = [col[0] for col in cursor.description]

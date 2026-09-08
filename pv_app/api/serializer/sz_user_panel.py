@@ -15,6 +15,19 @@ class UpdateCategorySerializer(serializers.Serializer):
     image = serializers.ImageField(required=False)
 
 
+class CreateAuthCarouselImageSerializer(serializers.Serializer):
+    image = serializers.ImageField()
+    display_order = serializers.IntegerField(required=False, allow_null=True, min_value=0)
+    is_active = serializers.BooleanField(required=False, default=True)
+
+
+class UpdateAuthCarouselImageSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    image = serializers.ImageField(required=False)
+    display_order = serializers.IntegerField(required=False, min_value=0)
+    is_active = serializers.BooleanField(required=False)
+
+
 class CreateSubCategorySerializer(serializers.Serializer):
     category_id = serializers.IntegerField()
     name = serializers.CharField(max_length=255)

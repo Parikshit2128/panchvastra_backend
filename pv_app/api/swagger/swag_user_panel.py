@@ -5,7 +5,63 @@ from drf_spectacular.utils import (
     OpenApiTypes
 )
 
-from pv_app.api.serializer.sz_user_panel import AddToCartSerializer, CouponSerializer, CreateAddressSerializer, CreateCategorySerializer, CreateProductSerializer, CreateSubCategorySerializer, NotifyMeSerializer, ProductImageUploadSerializer, UpdateAddressSerializer, UpdateCartSerializer, UpdateCategorySerializer, UpdateCouponSerializer, UpdateProductSerializer, UpdateSubCategorySerializer
+from pv_app.api.serializer.sz_user_panel import AddToCartSerializer, CouponSerializer, CreateAddressSerializer, CreateAuthCarouselImageSerializer, CreateCategorySerializer, CreateProductSerializer, CreateSubCategorySerializer, NotifyMeSerializer, ProductImageUploadSerializer, UpdateAddressSerializer, UpdateAuthCarouselImageSerializer, UpdateCartSerializer, UpdateCategorySerializer, UpdateCouponSerializer, UpdateProductSerializer, UpdateSubCategorySerializer
+
+
+auth_carousel_schema = extend_schema_view(
+    get=extend_schema(
+        tags=["Auth Carousel"],
+        description=(
+            "Get carousel/banner images for the Login and Signup pages, "
+            "ordered by display_order. Public and no token required — in "
+            "that case only active images are returned. An admin token "
+            "additionally returns inactive images, so the admin panel can "
+            "find and re-activate one. Pass 'id' to fetch a single image."
+        ),
+        parameters=[
+            OpenApiParameter(
+                name="id",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description="Fetch a specific carousel image by ID."
+            ),
+        ],
+    ),
+
+    post=extend_schema(
+        tags=["Auth Carousel"],
+        description=(
+            "Upload a new carousel image. Admin only. If display_order is "
+            "omitted, it's assigned automatically as the current highest "
+            "display_order + 1."
+        ),
+        request=CreateAuthCarouselImageSerializer,
+    ),
+
+    put=extend_schema(
+        tags=["Auth Carousel"],
+        description=(
+            "Update a carousel image — replace the image file, change its "
+            "display_order, or toggle is_active. Admin only. Send only "
+            "the fields you're changing."
+        ),
+        request=UpdateAuthCarouselImageSerializer,
+    ),
+
+    delete=extend_schema(
+        tags=["Auth Carousel"],
+        description="Soft delete a carousel image. Admin only.",
+        parameters=[
+            OpenApiParameter(
+                name="id",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=True
+            )
+        ],
+    ),
+)
 
 
 categories_management_schema = extend_schema_view(
