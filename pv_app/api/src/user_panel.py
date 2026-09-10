@@ -545,15 +545,26 @@ def notify_me_management(request):
         )
 
     elif request.method == "GET":
+
+        # Admin-only — this is the full customer waitlist (email included),
+        # not a "my subscriptions" view, so unlike POST/DELETE a non-admin
+        # token is rejected outright rather than scoped down to their own
+        # rows.
+        if not is_admin:
+            return {
+                "message": "You are not authorized to perform this action.",
+                "data": {}
+            }, status.HTTP_403_FORBIDDEN
+
         variant_size_id = request.GET.get("variant_size_id")
         page = request.GET.get("page", 1)
-        page_size = request.GET.get("page_size", 10)
+        page_size = request.GET.get("page_size", 20)
 
         return get_notify_me_requests(
             variant_size_id=variant_size_id,
             page=page,
             page_size=page_size,
-            user_id=None if is_admin else request.user_id
+            user_id=None
         )
 
     elif request.method == "DELETE":

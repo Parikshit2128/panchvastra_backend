@@ -4892,24 +4892,31 @@ def create_notify_me_request(validated_data, user_id):
 
 _NOTIFY_ME_SELECT_COLUMNS = [
     "id", "variant_size_id", "email", "user_id", "created_at",
-    "size", "stock_quantity", "color", "product_id", "product_name"
+    "size", "stock_quantity", "color", "variant_id", "product_id",
+    "product_name", "is_notified"
 ]
 
 
 def get_notify_me_requests(variant_size_id=None, page=1, page_size=10, user_id=None):
 
     where_conditions = [
-        "n.is_deleted = FALSE",
-        "n.is_notified = FALSE"
+        "n.is_deleted = FALSE"
     ]
 
     params = []
 
-    # Regular users only ever see their own subscriptions; passing user_id=None
-    # (admin callers) returns the site-wide list, optionally filtered by size.
+    # Regular users only ever see their own subscriptions, and only the
+    # ones still pending — this preserves the exact behavior the customer
+    # POST/DELETE contract has always relied on (a customer never sees a
+    # past/already-fulfilled request in this list).
+    #
+    # Admin callers (user_id=None) get the site-wide list — both pending
+    # and already-notified — so is_notified is meaningful in the response
+    # instead of always being False, and the admin table can show status.
     if user_id is not None:
         where_conditions.append("n.user_id = %s")
         params.append(user_id)
+        where_conditions.append("n.is_notified = FALSE")
 
     if variant_size_id:
         where_conditions.append("n.variant_size_id = %s")
@@ -4931,9 +4938,12 @@ def get_notify_me_requests(variant_size_id=None, page=1, page_size=10, user_id=N
         total_records = cursor.fetchone()[0]
 
         if total_records == 0:
+            _, _, _, pagination = resolve_pagination(page, page_size, 0)
+
             return {
                 "message": "Data not found.",
-                "data": []
+                "data": [],
+                "pagination": pagination
             }, status.HTTP_200_OK
 
         page, page_size, offset, pagination = resolve_pagination(page, page_size, total_records)
@@ -4949,8 +4959,10 @@ def get_notify_me_requests(variant_size_id=None, page=1, page_size=10, user_id=N
                 pvs.size,
                 pvs.stock_quantity,
                 v.color,
+                v.id AS variant_id,
                 p.id AS product_id,
-                p.name AS product_name
+                p.name AS product_name,
+                n.is_notified
             {joins}
             WHERE {where_clause}
             ORDER BY n.created_at DESC
@@ -4960,6 +4972,14 @@ def get_notify_me_requests(variant_size_id=None, page=1, page_size=10, user_id=N
         )
 
         result = db_query_result_to_json(cursor.fetchall(), _NOTIFY_ME_SELECT_COLUMNS)
+
+        # product_variant_sizes has no separate identity of its own beyond
+        # this row's id — variant_size_id (on notify_me_requests) IS that
+        # id (pvs.id). There's no distinct "sizes" lookup table in this
+        # schema, so size_id is the same value under the name the admin
+        # UI asked for, not a second real column.
+        for item in result:
+            item["size_id"] = item["variant_size_id"]
 
     return {
         "message": "Data fetched successfully.",

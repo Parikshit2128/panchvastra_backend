@@ -5,7 +5,7 @@ from drf_spectacular.utils import (
     OpenApiTypes
 )
 
-from pv_app.api.serializer.sz_user_panel import AddToCartSerializer, CouponSerializer, CreateAddressSerializer, CreateAuthCarouselImageSerializer, CreateCategorySerializer, CreateProductSerializer, CreateSubCategorySerializer, NotifyMeSerializer, ProductImageUploadSerializer, UpdateAddressSerializer, UpdateAuthCarouselImageSerializer, UpdateCartSerializer, UpdateCategorySerializer, UpdateCouponSerializer, UpdateOrderStatusSerializer, UpdateProductSerializer, UpdateSubCategorySerializer
+from pv_app.api.serializer.sz_user_panel import AddToCartSerializer, CouponSerializer, CreateAddressSerializer, CreateAuthCarouselImageSerializer, CreateCategorySerializer, CreateProductSerializer, CreateSubCategorySerializer, NotifyMeAdminListResponseSerializer, NotifyMeSerializer, ProductImageUploadSerializer, UpdateAddressSerializer, UpdateAuthCarouselImageSerializer, UpdateCartSerializer, UpdateCategorySerializer, UpdateCouponSerializer, UpdateOrderStatusSerializer, UpdateProductSerializer, UpdateSubCategorySerializer
 
 
 auth_carousel_schema = extend_schema_view(
@@ -535,8 +535,14 @@ notify_me_schema = extend_schema_view(
 
     get=extend_schema(
         tags=["Notify Me"],
-        summary="List pending notify-me requests",
-        description="Returns pending (not yet notified) restock subscriptions, optionally filtered by variant_size_id.",
+        summary="Admin: list notify-me requests",
+        description=(
+            "Admin only (403 for a non-admin token) — returns the full "
+            "restock-notification waitlist across all customers, resolved "
+            "server-side to product/variant/size/email in one query. "
+            "Optionally filtered to one variant_size_id. Includes both "
+            "pending and already-notified requests — see is_notified."
+        ),
         parameters=[
             OpenApiParameter(
                 name="variant_size_id",
@@ -549,15 +555,18 @@ notify_me_schema = extend_schema_view(
                 name="page",
                 type=OpenApiTypes.INT,
                 location=OpenApiParameter.QUERY,
-                required=False
+                required=False,
+                description="Default: 1"
             ),
             OpenApiParameter(
                 name="page_size",
                 type=OpenApiTypes.INT,
                 location=OpenApiParameter.QUERY,
-                required=False
+                required=False,
+                description="Default: 20"
             ),
         ],
+        responses={200: NotifyMeAdminListResponseSerializer},
     ),
 
     delete=extend_schema(

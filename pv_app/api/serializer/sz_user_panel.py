@@ -367,3 +367,40 @@ class UpdateOrderStatusSerializer(serializers.Serializer):
     tracking_id = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     courier_name = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
+
+class NotifyMeAdminItemSerializer(serializers.Serializer):
+    """Documents one row of GET /v1/notify_me/'s admin response — read-only,
+    not used for input validation.
+    """
+    id = serializers.IntegerField()
+    email = serializers.EmailField()
+    variant_size_id = serializers.IntegerField()
+    size_id = serializers.IntegerField(
+        help_text="Same value as variant_size_id — product_variant_sizes has no separate id concept of its own."
+    )
+    product_id = serializers.IntegerField()
+    product_name = serializers.CharField()
+    variant_id = serializers.IntegerField()
+    color = serializers.CharField()
+    size = serializers.CharField()
+    stock_quantity = serializers.IntegerField(allow_null=True)
+    user_id = serializers.IntegerField()
+    created_at = serializers.DateTimeField()
+    is_notified = serializers.BooleanField()
+
+
+class PaginationSerializer(serializers.Serializer):
+    current_page = serializers.IntegerField()
+    page_size = serializers.IntegerField()
+    total_pages = serializers.IntegerField()
+    total_records = serializers.IntegerField()
+    has_next = serializers.BooleanField()
+    has_previous = serializers.BooleanField()
+
+
+class NotifyMeAdminListResponseSerializer(serializers.Serializer):
+    success = serializers.BooleanField()
+    message = serializers.CharField()
+    data = NotifyMeAdminItemSerializer(many=True)
+    pagination = PaginationSerializer()
+
