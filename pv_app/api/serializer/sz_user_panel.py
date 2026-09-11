@@ -187,6 +187,20 @@ class ProductVariantSerializer(serializers.Serializer):
         return attrs
     
 
+class KeyHighlightSerializer(serializers.Serializer):
+    """One label/value row of a product's Key Highlights table.
+
+    Deliberately free-form: labels are NOT a fixed enum, because different
+    product types need different attributes (a hoodie has "Hood Type", a
+    cap has "Closure Type"). allow_blank stays at its default of False so
+    an empty label or value is rejected rather than silently stored, and
+    trim_whitespace means a whitespace-only string counts as empty.
+    """
+
+    label = serializers.CharField(max_length=255)
+    value = serializers.CharField(max_length=1000)
+
+
 class CreateProductSerializer(serializers.Serializer):
 
     category_id = serializers.IntegerField()
@@ -221,9 +235,10 @@ class CreateProductSerializer(serializers.Serializer):
 
     is_active = serializers.BooleanField(default=True)
 
-    key_highlights = serializers.JSONField(
+    key_highlights = KeyHighlightSerializer(
+        many=True,
         required=False,
-        default=dict
+        default=list
     )
 
     tags = serializers.ListField(
@@ -236,7 +251,29 @@ class CreateProductSerializer(serializers.Serializer):
         many=True, required=True, allow_empty=False
     )
 
-    
+    def validate_key_highlights(self, value):
+        """Rejects two highlights sharing a label on the same product — they
+        render as two identical rows in the customer's highlights table, which
+        is always a mistake rather than an intent. Compared case-insensitively
+        since "Fabric" and "fabric" are just as confusing side by side.
+
+        Inherited by UpdateProductSerializer, so create and update enforce
+        this identically.
+        """
+        seen_labels = set()
+
+        for highlight in value:
+            label = highlight["label"]
+            comparable = label.casefold()
+
+            if comparable in seen_labels:
+                raise serializers.ValidationError(
+                    f"Duplicate key highlight label: {label}."
+                )
+
+            seen_labels.add(comparable)
+
+        return value
 
 
 class CreateAddressSerializer(serializers.Serializer):
@@ -284,7 +321,13 @@ class ProductImageUploadSerializer(serializers.Serializer):
             "The full product payload as a JSON string, same shape as the "
             "application/json request body (CreateProductSerializer for "
             "POST, UpdateProductSerializer for PUT). variants[].images is "
-            "not part of this JSON — attach files separately below."
+            "not part of this JSON — attach files separately below. "
+            "variant_image_orders (reordering EXISTING images by id, PUT "
+            "only) IS part of this JSON string, e.g.: "
+            '\'{"id": 42, ..., "variant_image_orders": '
+            '[{"id": 91, "display_order": 2}, {"id": 88, "display_order": 3}]}\''
+            " — it is NOT a separate multipart field, unlike the new-image "
+            "ordering fields below."
         )
     )
 
@@ -299,10 +342,31 @@ class ProductImageUploadSerializer(serializers.Serializer):
         )
     )
 
+    variant_0_image_orders = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        required=False,
+        help_text=(
+            "Optional. display_order for each file in variant_0_images, "
+            "matched by POSITION (not filename) — the Nth value here is "
+            "the display_order for the Nth file above, so send them in "
+            "the same order. If omitted, new images keep the old "
+            "behavior: auto-appended after the current highest "
+            "display_order in that variant. If provided, its length must "
+            "exactly match variant_0_images' file count, and the backend "
+            "uses these values exactly — it will NOT also auto-append."
+        )
+    )
+
     variant_1_images = serializers.ListField(
         child=serializers.ImageField(),
         required=False,
         help_text="Image files for variants[1] in 'data'. Same pattern as variant_0_images."
+    )
+
+    variant_1_image_orders = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        required=False,
+        help_text="Same as variant_0_image_orders, for variant_1_images."
     )
 
     variant_2_images = serializers.ListField(
@@ -315,6 +379,23 @@ class ProductImageUploadSerializer(serializers.Serializer):
             "here and add more variant_<index>_images fields by hand."
         )
     )
+
+    variant_2_image_orders = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        required=False,
+        help_text="Same as variant_0_image_orders, for variant_2_images."
+    )
+
+
+class VariantImageOrderSerializer(serializers.Serializer):
+    """One entry of UpdateProductSerializer.variant_image_orders — repositions
+    an EXISTING product_variant_images row by id. min_value=1 on
+    display_order is what actually enforces "positive integer": DRF's
+    IntegerField already rejects non-integers (including decimals like 1.5,
+    since it parses via int(str(value))) before min_value is even checked.
+    """
+    id = serializers.IntegerField()
+    display_order = serializers.IntegerField(min_value=1)
 
 
 class UpdateProductSerializer(CreateProductSerializer):
@@ -350,6 +431,13 @@ class UpdateProductSerializer(CreateProductSerializer):
         child=serializers.IntegerField(),
         required=False,
         default=list
+    )
+
+    # Reorders EXISTING images (by id) — for new, not-yet-uploaded images,
+    # ordering instead travels positionally via the multipart
+    # variant_<index>_image_orders field (see ProductImageUploadSerializer).
+    variant_image_orders = VariantImageOrderSerializer(
+        many=True, required=False, default=list
     )
 
 

@@ -310,7 +310,33 @@ products_management_schema = extend_schema_view(
            number of images per variant.
 
         display_order is assigned automatically in submission order,
-        starting at 1 for a new product/variant.
+        starting at 1 for a new product/variant, UNLESS a same-indexed
+        variant_<index>_image_orders field is sent — see UPDATE's
+        documentation below for the full rules; they apply identically
+        here since new-image upload uses one shared code path for both.
+
+        KEY HIGHLIGHTS — key_highlights is an ordered ARRAY of
+        {label, value} objects (never a raw JSON object):
+
+            "key_highlights": [
+              {"label": "Product Category", "value": "Topwear"},
+              {"label": "Fit", "value": "Regular Fit"},
+              {"label": "Fabric", "value": "Breathable Fabric"}
+            ]
+
+        Labels are free-form — they are NOT a fixed list, so a hoodie can
+        send {"label": "Hood Type", ...} and a cap {"label": "Closure
+        Type", ...}. Array order is preserved end to end and is the order
+        the customer product page renders, so the admin's sequence is
+        what ships; nothing is sorted server-side. The field is optional
+        and [] is valid. Rejected with 400: anything that isn't an array
+        (a bare {} or string), entries that aren't objects, a missing or
+        empty/whitespace-only label or value, and two entries sharing a
+        label (compared case-insensitively).
+
+        In multipart/form-data, key_highlights travels inside the 'data'
+        JSON string like every other product field — it is NOT a separate
+        form part.
         """,
         request={
             "application/json": CreateProductSerializer,
@@ -343,6 +369,77 @@ products_management_schema = extend_schema_view(
         display_order for that variant, so existing ordering is preserved.
         A plain application/json body (no files) continues to work exactly
         as before.
+
+        DRAG-AND-DROP IMAGE ORDERING (both existing and newly uploaded
+        images, as one interleaved list):
+
+        1) Reordering EXISTING images — variant_image_orders, inside the
+           'data' JSON (NOT a separate multipart field):
+             "variant_image_orders": [
+               {"id": 91, "display_order": 2},
+               {"id": 88, "display_order": 3}
+             ]
+           Each id must be an existing product_variant_images row that
+           belongs to THIS product (validated server-side against the
+           actual product -> variant -> image relationship — a foreign
+           image id returns 400) — its display_order changes, nothing
+           else about it does, and its id never changes. An existing
+           image NOT listed here keeps its current display_order
+           untouched — this never auto-renumbers the rest of the variant.
+
+        2) Ordering NEWLY UPLOADED images — a same-indexed
+           variant_<index>_image_orders multipart field, positional against
+           variant_<index>_images (the Nth order value is the Nth file's
+           display_order, regardless of filename):
+             variant_0_images: newA.jpg, newB.jpg
+             variant_0_image_orders: 1, 4
+           newA.jpg -> display_order 1, newB.jpg -> display_order 4. This
+           is OPTIONAL and per-variant: a variant with uploaded images but
+           no *_image_orders field keeps the old auto-append behavior
+           (appended after the current max display_order); a variant WITH
+           it uses those exact values instead — new images are then never
+           auto-appended for that variant, so its *_image_orders length
+           must equal its *_images file count (400 otherwise).
+
+        3) Interleaving both in one request — combine 1) and 2): e.g. move
+           existing image 91 to position 2 via variant_image_orders while
+           uploading a new image at position 1 via variant_0_image_orders
+           — both apply together against the same final per-variant
+           sequence.
+
+        Validation (400 on any failure, nothing is partially applied —
+        this validates everything before writing anything):
+        - Every variant_image_orders id must belong to this product.
+        - display_order must be a positive integer (0, negative, decimal,
+          non-numeric all rejected).
+        - The FINAL image set of each affected variant — existing images
+          that survive deletion (with any requested reorder applied) plus
+          any explicitly-ordered new images — must not contain a duplicate
+          display_order. Checked per variant, never across variants.
+        - variant_<index>_image_orders' length must equal
+          variant_<index>_images' file count.
+
+        Backward compatible: omit variant_image_orders and every
+        variant_<index>_image_orders entirely and this endpoint behaves
+        exactly as it did before — no new field is required.
+
+        KEY HIGHLIGHTS — same array-of-{label, value} contract, ordering
+        and validation as CREATE (see above). Sending key_highlights
+        REPLACES the product's current highlights wholesale with the list
+        given, so the admin panel should always submit the complete final
+        list — adding, editing, removing and reordering are all expressed
+        by simply sending the list as it should end up. Omitting the field
+        leaves whatever is stored untouched is NOT the behavior: like the
+        other scalar product fields on this endpoint, an omitted
+        key_highlights falls back to its default ([]) and clears the
+        stored value, so always send the full list you want persisted.
+
+        Reading back: GET product detail always returns key_highlights in
+        the {label, value} array shape, including for products saved
+        before this contract existed (older rows held either {} or a plain
+        array of strings; those are converted on read, never rewritten in
+        place, and a legacy bare string comes back as {"label": "",
+        "value": "<original text>"}).
         """,
         request={
             "application/json": UpdateProductSerializer,

@@ -42,12 +42,53 @@ def _attach_variant_image_uploads(validated_data, request):
     variant's position in the submitted 'variants' array (variant_<index>_images)
     and attaches the validated files onto that variant dict as 'new_images'
     for the business logic layer to upload/store.
+
+    Also looks for a same-indexed variant_<index>_image_orders field — plain
+    (non-file) multipart values, read via request.data.getlist() since a
+    QueryDict collapses repeated keys down to the last one under plain
+    .get(). When present, its values map to variant_<index>_images
+    POSITIONALLY (Nth order value -> Nth file, not by filename), and are
+    attached as 'new_image_orders' for the business logic layer to use
+    verbatim instead of auto-appending after the current max display_order.
     """
     for index, variant in enumerate(validated_data.get("variants", [])):
         uploads = request.FILES.getlist(f"variant_{index}_images")
 
         if uploads:
             variant["new_images"] = validate_image_files(uploads)
+
+        raw_orders = request.data.getlist(f"variant_{index}_image_orders")
+
+        if not raw_orders:
+            continue
+
+        if len(raw_orders) != len(uploads):
+            raise ValidationError({
+                f"variant_{index}_image_orders": (
+                    f"The number of image orders must match the number of "
+                    f"uploaded images for variant {index}."
+                )
+            })
+
+        parsed_orders = []
+
+        for raw_value in raw_orders:
+            try:
+                parsed_value = int(raw_value)
+            except (TypeError, ValueError):
+                parsed_value = None
+
+            if parsed_value is None or parsed_value < 1:
+                raise ValidationError({
+                    f"variant_{index}_image_orders": (
+                        f"display_order must be a positive integer, got "
+                        f"'{raw_value}'."
+                    )
+                })
+
+            parsed_orders.append(parsed_value)
+
+        variant["new_image_orders"] = parsed_orders
 
 
 

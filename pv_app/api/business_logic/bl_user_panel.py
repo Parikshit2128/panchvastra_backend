@@ -1574,6 +1574,61 @@ def get_product_listing(
     return {"message": "Data fetched successfully.", "data": result, "pagination": pagination}, status.HTTP_200_OK
 
 
+def normalize_key_highlights(raw):
+    """Coerces whatever is in products.key_highlights into the API's
+    [{"label": ..., "value": ...}] contract, so the customer frontend can
+    always map label -> value without sniffing the shape first.
+
+    This is READ-side only and never rewrites what's stored — three legacy
+    shapes predate the structured contract and are still live in the table:
+
+      {}                              -> []   (the old JSONField default)
+      ["Soft-wash finish", ...]       -> [{"label": "", "value": "Soft-wash finish"}, ...]
+      {"Fabric": "Cotton"}            -> [{"label": "Fabric", "value": "Cotton"}]
+
+    The bare-string form has no label to recover, so the text is preserved
+    verbatim as the value rather than inventing one. Array order is kept
+    exactly as stored in both directions.
+    """
+    if not raw:
+        return []
+
+    # psycopg2 hands jsonb back as raw text here (no json loads adapter is
+    # registered), which is why variants/tags are decoded the same way at
+    # this layer. Returning it undecoded is what made the admin form show a
+    # raw JSON blob instead of fields.
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+
+        if not raw:
+            return []
+
+    if isinstance(raw, list):
+        normalized = []
+
+        for entry in raw:
+            if isinstance(entry, dict):
+                normalized.append({
+                    "label": entry.get("label") or "",
+                    "value": entry.get("value") or ""
+                })
+            else:
+                normalized.append({"label": "", "value": str(entry)})
+
+        return normalized
+
+    if isinstance(raw, dict):
+        return [
+            {"label": str(label), "value": str(value)}
+            for label, value in raw.items()
+        ]
+
+    return []
+
+
 def get_product_detail(product_id):
 
     sql = """
@@ -1643,7 +1698,7 @@ def get_product_detail(product_id):
     item["sub_category"] = {"id": item.pop("sub_category_id"), "name": item.pop("sub_category_name")} if item["sub_category_id"] else None
     item["variants"] = json.loads(item["variants"]) if isinstance(item["variants"], str) else item["variants"]
     item["tags"] = json.loads(item["tags"]) if isinstance(item["tags"], str) else item["tags"]
-    item["key_highlights"] = item.get("key_highlights") or {}
+    item["key_highlights"] = normalize_key_highlights(item.get("key_highlights"))
 
     for v in item["variants"]:
         mrp = float(v["mrp"])
@@ -2626,8 +2681,11 @@ def create_product(data, user_id):
     is_new_arrival = data.get("is_new_arrival", False)
     is_active = data.get("is_active", True)
 
+    # Stored as a jsonb ARRAY of {label, value} objects. jsonb preserves
+    # array element order, which is what the customer highlights table
+    # renders in — so the admin's chosen sequence survives the round trip.
     key_highlights = json.dumps(
-        data.get("key_highlights", {})
+        data.get("key_highlights", [])
     )
 
     tags = data.get("tags", [])
@@ -2772,6 +2830,29 @@ def create_product(data, user_id):
                         "data": {
                             "existing_skus": existing_skus
                         }
+                    }, status.HTTP_400_BAD_REQUEST
+
+            # --------------------------------------------------
+            # New Image Order Validation
+            # --------------------------------------------------
+            # A brand-new product has no existing images to collide with —
+            # only images uploaded for the SAME variant can conflict.
+
+            for variant in variants:
+
+                explicit_orders = variant.get("new_image_orders")
+
+                if not explicit_orders:
+                    continue
+
+                if len(explicit_orders) != len(set(explicit_orders)):
+                    duplicate_value = next(
+                        v for v in explicit_orders
+                        if explicit_orders.count(v) > 1
+                    )
+                    return {
+                        "message": f"Duplicate display_order {duplicate_value} for this variant.",
+                        "data": {}
                     }, status.HTTP_400_BAD_REQUEST
 
             # --------------------------------------------------
@@ -2979,6 +3060,14 @@ def create_product(data, user_id):
 
                 if new_images:
 
+                    explicit_orders = variant.get("new_image_orders")
+
+                    orders_to_use = (
+                        explicit_orders
+                        if explicit_orders
+                        else range(1, len(new_images) + 1)
+                    )
+
                     image_rows = [
                         (
                             variant_id,
@@ -2988,7 +3077,7 @@ def create_product(data, user_id):
                             user_id,
                             user_id
                         )
-                        for order, image in enumerate(new_images, start=1)
+                        for image, order in zip(new_images, orders_to_use)
                     ]
 
                     cursor.executemany(
@@ -3429,8 +3518,11 @@ def update_product(data, user_id):
     is_new_arrival = data.get("is_new_arrival", False)
     is_active = data.get("is_active", True)
 
+    # Stored as a jsonb ARRAY of {label, value} objects. jsonb preserves
+    # array element order, which is what the customer highlights table
+    # renders in — so the admin's chosen sequence survives the round trip.
     key_highlights = json.dumps(
-        data.get("key_highlights", {})
+        data.get("key_highlights", [])
     )
 
     tags = data.get("tags", [])
@@ -3440,6 +3532,7 @@ def update_product(data, user_id):
     delete_variant_ids = data.get("delete_variant_ids", [])
     delete_size_ids = data.get("delete_size_ids", [])
     delete_variant_image_ids = data.get("delete_variant_image_ids", [])
+    variant_image_orders = data.get("variant_image_orders", [])
 
     try:
 
@@ -3705,6 +3798,154 @@ def update_product(data, user_id):
                             "invalid_variant_image_ids": invalid_image_ids
                         }
                     }, status.HTTP_400_BAD_REQUEST)
+
+            # --------------------------------------------------
+            # Variant Image Reorder — Ownership Validation
+            # --------------------------------------------------
+            # variant_image_orders repositions EXISTING images by id. Every
+            # id must actually belong to a variant of THIS product — never
+            # trust the frontend to have scoped this correctly itself.
+
+            reorder_ids = [item["id"] for item in variant_image_orders]
+            reorder_map = {
+                item["id"]: item["display_order"]
+                for item in variant_image_orders
+            }
+
+            image_variant_map = {}
+
+            if reorder_ids:
+
+                cursor.execute("""
+                    SELECT pvi.id, pvi.variant_id
+                    FROM product_variant_images pvi
+                    JOIN product_variants pv
+                        ON pv.id = pvi.variant_id
+                    WHERE pvi.id = ANY(%s)
+                    AND pv.product_id = %s
+                    AND pvi.is_deleted = FALSE
+                    AND pv.is_deleted = FALSE
+                """, [reorder_ids, product_id])
+
+                image_variant_map = {
+                    row[0]: row[1]
+                    for row in cursor.fetchall()
+                }
+
+                invalid_reorder_ids = [
+                    image_id
+                    for image_id in reorder_ids
+                    if image_id not in image_variant_map
+                ]
+
+                if invalid_reorder_ids:
+                    raise _ProductUpdateAborted({
+                        "message": f"Image ID {invalid_reorder_ids[0]} does not belong to this product.",
+                        "data": {
+                            "invalid_variant_image_ids": invalid_reorder_ids
+                        }
+                    }, status.HTTP_400_BAD_REQUEST)
+
+            # --------------------------------------------------
+            # Variant Image Reorder — Duplicate display_order Validation
+            # --------------------------------------------------
+            # For every variant touched by a reorder and/or explicit new-
+            # image ordering, compute what its FULL final image set would
+            # look like (existing images that survive deletion, with
+            # requested reorders applied, plus any explicitly-ordered new
+            # images) and reject before touching anything if that set has
+            # a duplicate display_order. Untouched images keep whatever
+            # display_order they already have.
+
+            variants_by_existing_id = {
+                variant["id"]: variant
+                for variant in variants
+                if variant.get("id")
+            }
+
+            affected_variant_ids = set(image_variant_map.values()) | {
+                variant["id"]
+                for variant in variants
+                if variant.get("id") and variant.get("new_image_orders")
+            }
+
+            for affected_variant_id in affected_variant_ids:
+
+                cursor.execute("""
+                    SELECT id, display_order
+                    FROM product_variant_images
+                    WHERE variant_id = %s
+                    AND is_deleted = FALSE
+                """, [affected_variant_id])
+
+                final_orders = {
+                    row[0]: row[1]
+                    for row in cursor.fetchall()
+                    if row[0] not in delete_variant_image_ids
+                }
+
+                for image_id, owning_variant_id in image_variant_map.items():
+                    if owning_variant_id == affected_variant_id and image_id in final_orders:
+                        final_orders[image_id] = reorder_map[image_id]
+
+                combined_values = list(final_orders.values())
+
+                matching_variant = variants_by_existing_id.get(affected_variant_id) or {}
+                combined_values.extend(matching_variant.get("new_image_orders") or [])
+
+                seen_values = set()
+
+                for value in combined_values:
+                    if value in seen_values:
+                        raise _ProductUpdateAborted({
+                            "message": f"Duplicate display_order {value} for variant {affected_variant_id}.",
+                            "data": {}
+                        }, status.HTTP_400_BAD_REQUEST)
+                    seen_values.add(value)
+
+            # Brand-new variants (no id yet) have no existing images to
+            # collide with — only their own explicit new-image orders can
+            # conflict with each other.
+            for variant in variants:
+
+                if variant.get("id") or not variant.get("new_image_orders"):
+                    continue
+
+                values = variant["new_image_orders"]
+
+                if len(values) != len(set(values)):
+                    duplicate_value = next(v for v in values if values.count(v) > 1)
+                    raise _ProductUpdateAborted({
+                        "message": f"Duplicate display_order {duplicate_value} for this variant.",
+                        "data": {}
+                    }, status.HTTP_400_BAD_REQUEST)
+
+            # --------------------------------------------------
+            # Variant Image Reorder — Apply
+            # --------------------------------------------------
+            # Only the display_order column changes here — image_url and
+            # every other column on these rows are left exactly as they
+            # are. An id that's also in delete_variant_image_ids is
+            # skipped: it's about to be soft-deleted, so reordering it is
+            # moot (and the row is already excluded from every
+            # duplicate/max check above).
+
+            reorder_updates = [
+                (reorder_map[image_id], user_id, image_id)
+                for image_id in reorder_ids
+                if image_id not in delete_variant_image_ids
+            ]
+
+            if reorder_updates:
+                cursor.executemany("""
+                    UPDATE product_variant_images
+                    SET
+                        display_order = %s,
+                        updated_by = %s,
+                        updated_at = NOW()
+                    WHERE id = %s
+                    AND is_deleted = FALSE
+                """, reorder_updates)
 
             # --------------------------------------------------
             # SKU Validation
@@ -4209,39 +4450,53 @@ def update_product(data, user_id):
                 # Insert New Variant Images
                 # --------------------------------------------------
                 # Existing images are left untouched here — only
-                # delete_variant_image_ids removes them (above) and new
-                # uploads are appended after whatever display_order is
-                # already in use, so ordering stays stable.
+                # delete_variant_image_ids removes them (above). New
+                # uploads use the explicit new_image_orders values when
+                # given (already validated above to be duplicate-free
+                # against this variant's final image set); otherwise they
+                # keep the original behavior — appended after whatever
+                # display_order is already in use (which, if this same
+                # variant also had a reorder applied above, already
+                # reflects that, since it ran in this same transaction).
 
                 new_images = variant.get("new_images", [])
 
                 if new_images:
 
-                    cursor.execute(
-                        """
-                        SELECT COALESCE(MAX(display_order), 0)
-                        FROM product_variant_images
-                        WHERE variant_id = %s
-                        AND is_deleted = FALSE
-                        """,
-                        [variant_id]
-                    )
+                    explicit_orders = variant.get("new_image_orders")
 
-                    next_display_order = cursor.fetchone()[0]
+                    if explicit_orders:
+                        orders_to_use = explicit_orders
 
-                    image_rows = []
+                    else:
+                        cursor.execute(
+                            """
+                            SELECT COALESCE(MAX(display_order), 0)
+                            FROM product_variant_images
+                            WHERE variant_id = %s
+                            AND is_deleted = FALSE
+                            """,
+                            [variant_id]
+                        )
 
-                    for image in new_images:
-                        next_display_order += 1
+                        next_display_order = cursor.fetchone()[0]
+                        orders_to_use = []
 
-                        image_rows.append((
+                        for _ in new_images:
+                            next_display_order += 1
+                            orders_to_use.append(next_display_order)
+
+                    image_rows = [
+                        (
                             variant_id,
                             upload_image_to_storage(image=image, folder="/products")["url"],
-                            next_display_order,
+                            display_order,
                             True,
                             user_id,
                             user_id
-                        ))
+                        )
+                        for image, display_order in zip(new_images, orders_to_use)
+                    ]
 
                     cursor.executemany(
                         """
