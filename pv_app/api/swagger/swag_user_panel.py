@@ -67,7 +67,13 @@ auth_carousel_schema = extend_schema_view(
 categories_management_schema = extend_schema_view(
     get=extend_schema(
         tags=["Categories"],
-        description="Get category details. Fetch a specific category using id or all categories.",
+        description=(
+            "Get category details. Fetch a specific category using id or "
+            "all categories. Results are returned in display_order ASC "
+            "(ties broken by newest first), which is the order the "
+            "storefront and admin list should render — no client-side "
+            "sorting needed."
+        ),
         parameters=[
             OpenApiParameter(
                 name="page",
@@ -98,13 +104,22 @@ categories_management_schema = extend_schema_view(
 
     post=extend_schema(
         tags=["Categories"],
-        description="Create a new category.",
+        description=(
+            "Create a new category. display_order is optional — omit it and "
+            "the category is appended last (current highest + 1). Send it to "
+            "place the category at a specific position."
+        ),
         request=CreateCategorySerializer,
     ),
 
     put=extend_schema(
         tags=["Categories"],
-        description="Update an existing category.",
+        description=(
+            "Update an existing category. Send display_order to reposition "
+            "it; omit the field and the current position is left untouched. "
+            "Positions are not required to be unique or contiguous — GET "
+            "simply sorts by display_order ASC."
+        ),
         request=UpdateCategorySerializer,
     ),
 
@@ -126,7 +141,14 @@ categories_management_schema = extend_schema_view(
 sub_categories_management_schema = extend_schema_view(
     get=extend_schema(
         tags=["Sub Categories"],
-        description="Get sub category details. Fetch a specific sub category using id, all sub categories under a category, or all sub categories.",
+        description=(
+            "Get sub category details. Fetch a specific sub category using "
+            "id, all sub categories under a category, or all sub "
+            "categories. Results are returned in display_order ASC (ties "
+            "broken by newest first). Ordering is scoped to the parent "
+            "category, so combine with category_id to get one category's "
+            "sub categories in their intended order."
+        ),
         parameters=[
             OpenApiParameter(
                 name="page",
@@ -164,13 +186,26 @@ sub_categories_management_schema = extend_schema_view(
 
     post=extend_schema(
         tags=["Sub Categories"],
-        description="Create a new sub category under a category.",
+        description=(
+            "Create a new sub category under a category. display_order is "
+            "optional — omit it and the sub category is appended last "
+            "WITHIN ITS PARENT CATEGORY (that category's current highest + "
+            "1), so position 1 under 'Men' is independent of position 1 "
+            "under 'Women'."
+        ),
         request=CreateSubCategorySerializer,
     ),
 
     put=extend_schema(
         tags=["Sub Categories"],
-        description="Update an existing sub category.",
+        description=(
+            "Update an existing sub category. Send display_order to "
+            "reposition it within its parent category; omit the field and "
+            "the current position is left untouched. Note that moving a sub "
+            "category to a different category_id does NOT renumber its "
+            "display_order — send both fields together if the position "
+            "should change too."
+        ),
         request=UpdateSubCategorySerializer,
     ),
 

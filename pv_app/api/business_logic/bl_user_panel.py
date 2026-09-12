@@ -13,6 +13,7 @@ def create_category(data, user_id):
     description = data.get("description")
     image = data.get("image")
     is_active = data.get("is_active", True)
+    display_order = data.get("display_order")
 
     with connection.cursor() as cursor:
 
@@ -31,6 +32,18 @@ def create_category(data, user_id):
                 "message": "Category already exists.",
                 "data": {}
             }, status.HTTP_400_BAD_REQUEST
+
+        # Omitted display_order means "put it last", so the admin only has
+        # to set positions when they actually care about them.
+        if display_order is None:
+            cursor.execute(
+                """
+                SELECT COALESCE(MAX(display_order), 0)
+                FROM categories
+                WHERE is_deleted = FALSE
+                """
+            )
+            display_order = cursor.fetchone()[0] + 1
 
     # Upload only after the uniqueness check passes, so a rejected duplicate
     # name never orphans an image in ImageKit.
@@ -58,6 +71,7 @@ def create_category(data, user_id):
                     image_url,
                     imagekit_file_id,
                     is_active,
+                    display_order,
                     created_by,
                     updated_by,
                     created_at,
@@ -65,6 +79,7 @@ def create_category(data, user_id):
                 )
                 VALUES
                 (
+                    %s,
                     %s,
                     %s,
                     %s,
@@ -83,6 +98,7 @@ def create_category(data, user_id):
                     image_url,
                     imagekit_file_id,
                     is_active,
+                    display_order,
                     user_id,
                     user_id
                 ]
@@ -116,6 +132,7 @@ def get_categories(
         "description",
         "image_url",
         "is_active",
+        "display_order",
         "created_at",
         "created_by",
         "updated_at",
@@ -161,7 +178,7 @@ def get_categories(
             SELECT {columns_str}
             FROM categories
             {where_clause}
-            ORDER BY created_at DESC
+            ORDER BY display_order ASC, created_at DESC
             LIMIT %s OFFSET %s
             """,
             params + [page_size, offset]
@@ -198,7 +215,8 @@ def update_category(data, user_id):
     updatable_fields = [
         "name",
         "description",
-        "is_active"
+        "is_active",
+        "display_order"
     ]
 
     set_parts = []
@@ -706,6 +724,7 @@ def create_sub_category(data):
     category_id = data.get("category_id")
     name = data.get("name")
     is_active = data.get("is_active", True)
+    display_order = data.get("display_order")
 
     with connection.cursor() as cursor:
 
@@ -746,16 +765,33 @@ def create_sub_category(data):
                 "data": {}
             }, status.HTTP_400_BAD_REQUEST
 
+        # Ordering is scoped to the parent category — position 1 under "Men"
+        # is unrelated to position 1 under "Women" — so "put it last" means
+        # last within THIS category.
+        if display_order is None:
+            cursor.execute(
+                """
+                SELECT COALESCE(MAX(display_order), 0)
+                FROM sub_categories
+                WHERE category_id = %s
+                AND is_deleted = FALSE
+                """,
+                [category_id]
+            )
+            display_order = cursor.fetchone()[0] + 1
+
         cursor.execute(
             """
             INSERT INTO sub_categories
             (
                 category_id,
                 name,
-                is_active
+                is_active,
+                display_order
             )
             VALUES
             (
+                %s,
                 %s,
                 %s,
                 %s
@@ -765,7 +801,8 @@ def create_sub_category(data):
             [
                 category_id,
                 name,
-                is_active
+                is_active,
+                display_order
             ]
         )
 
@@ -796,7 +833,8 @@ def get_sub_categories(
         "id",
         "category_id",
         "name",
-        "is_active"
+        "is_active",
+        "display_order"
     ]
 
     columns_str = ", ".join(select_columns)
@@ -842,7 +880,7 @@ def get_sub_categories(
             SELECT {columns_str}
             FROM sub_categories
             {where_clause}
-            ORDER BY id DESC
+            ORDER BY display_order ASC, id DESC
             LIMIT %s OFFSET %s
             """,
             params + [page_size, offset]
@@ -877,7 +915,8 @@ def update_sub_category(data):
     updatable_fields = [
         "category_id",
         "name",
-        "is_active"
+        "is_active",
+        "display_order"
     ]
 
     with connection.cursor() as cursor:
