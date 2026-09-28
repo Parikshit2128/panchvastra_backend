@@ -5,10 +5,10 @@ from rest_framework import status
 
 from helpers.middleware import user_authentication_required
 from helpers.utils import generic_response_handler
-from pv_app.api.business_logic.bl_authentication import get_user_profile_logic, login_admin_logic, login_user_logic, register_user_logic, update_user_profile_logic, verify_user_email_logic
-from pv_app.api.serializer.sz_authentication import AdminLoginSerializer, UpdateUserProfileSerializer, UserLoginSerializer, UserRegistrationSerializer, VerifyEmailSerializer
+from pv_app.api.business_logic.bl_authentication import get_user_profile_logic, google_login_logic, login_admin_logic, login_user_logic, register_user_logic, update_user_profile_logic, verify_user_email_logic
+from pv_app.api.serializer.sz_authentication import AdminLoginSerializer, GoogleLoginSerializer, UpdateUserProfileSerializer, UserLoginSerializer, UserRegistrationSerializer, VerifyEmailSerializer
 
-from pv_app.api.swagger.swag_authentication import register_user_swagger, login_user_swagger, verify_email_swagger, login_admin_swagger, user_profile_swagger
+from pv_app.api.swagger.swag_authentication import register_user_swagger, login_user_swagger, google_login_swagger, verify_email_swagger, login_admin_swagger, user_profile_swagger
 
 
 @register_user_swagger
@@ -35,6 +35,19 @@ def login_user(request):
 
 
 login_user.cls.throttle_scope = "otp"
+
+
+@google_login_swagger
+@api_view(['POST'])
+@throttle_classes([ScopedRateThrottle])
+@generic_response_handler
+def google_login(request):
+    serializer = GoogleLoginSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    return google_login_logic(serializer.validated_data)
+
+
+google_login.cls.throttle_scope = "google_login"
 
 
 @login_admin_swagger

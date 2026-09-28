@@ -4,8 +4,11 @@ from helpers.utils import _store_otp, generate_otp_with_expiry, send_verificatio
 import jwt
 from datetime import datetime, timedelta, timezone
 
-from panchvastra.settings import SECRET_KEY
+from panchvastra.settings import GOOGLE_OAUTH_CLIENT_ID, SECRET_KEY
 from django.contrib.auth.hashers import check_password
+
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token as google_id_token
 
 
 USER_PROFILE_COLUMNS = [
@@ -347,6 +350,188 @@ def login_admin_logic(data):
         }
     }, 200
 
+
+
+def _issue_user_token(user_id, role_id):
+    """The same 15-day HS256 token the OTP flow hands out, so a session
+    started with Google is indistinguishable from any other downstream."""
+
+    payload = {
+        "user_id": user_id,
+        "user_role_id": role_id,
+        "exp": datetime.now(timezone.utc) + timedelta(days=15)
+    }
+
+    return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+
+
+def google_login_logic(data):
+    """Log in (or sign up) with a Google ID token.
+
+    The `credential` is the JWT the browser receives from Google Identity
+    Services. It arrives via the client, so nothing inside it is trusted
+    until verify_oauth2_token has checked Google's signature, that `aud`
+    matches OUR client id (otherwise a token minted for another site could
+    be replayed here), the issuer, and the expiry. Everything we then store
+    comes out of the verified claims — never out of the request body.
+    """
+
+    if not GOOGLE_OAUTH_CLIENT_ID:
+        return {
+            "message": "Google login is not configured on this server."
+        }, 503
+
+    try:
+        claims = google_id_token.verify_oauth2_token(
+            data["credential"],
+            google_requests.Request(),
+            GOOGLE_OAUTH_CLIENT_ID
+        )
+
+    except ValueError:
+        # Covers a forged signature, a wrong audience and an expired token
+        # alike. They are deliberately not distinguished in the response:
+        # the client can do nothing different about any of them except
+        # start the Google flow again.
+        return {"message": "Invalid or expired Google login."}, 401
+
+    # Google will happily issue a token for an unverified address on some
+    # Workspace configurations, and an unverified address is exactly what
+    # would let someone claim an existing account below.
+    if not claims.get("email_verified"):
+        return {
+            "message": "Your Google account email is not verified."
+        }, 403
+
+    google_id = claims["sub"]
+    email = claims["email"].lower().strip()
+
+    with connection.cursor() as cursor:
+
+        # `sub` is Google's permanent id for the account and is matched
+        # first, so a user who later changes their Gmail address still
+        # lands on their own row instead of creating a second one.
+        cursor.execute(
+            """
+            SELECT id, role_id, google_id, is_active
+            FROM users
+            WHERE (google_id = %s OR email = %s)
+            AND is_deleted = FALSE
+            ORDER BY (google_id = %s) DESC
+            LIMIT 1
+            """,
+            [google_id, email, google_id]
+        )
+
+        row = cursor.fetchone()
+
+        if row:
+
+            user_id, role_id, existing_google_id, is_active = row
+
+            if not is_active:
+                return {
+                    "message": "This account has been deactivated."
+                }, 403
+
+            # Admins authenticate with a password through login_admin.
+            # Refusing them here keeps Google from becoming a second,
+            # unintended way into an elevated account.
+            if role_id != 2:
+                return {
+                    "message": "Please use the admin login for this account."
+                }, 403
+
+            if existing_google_id and existing_google_id != google_id:
+                return {
+                    "message": "This email is already linked to a different Google account."
+                }, 409
+
+            # Linking an OTP-registered account to Google is safe only
+            # because Google confirmed the address above. email_verified is
+            # forced true for the case where they registered but never
+            # completed the OTP step — Google just did it for them.
+            cursor.execute(
+                """
+                UPDATE users
+                SET
+                    google_id = %s,
+                    email_verified = TRUE,
+                    profile_image = COALESCE(profile_image, %s),
+                    last_login_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                [
+                    google_id,
+                    claims.get("picture"),
+                    user_id
+                ]
+            )
+
+            message = "Login successful."
+            response_status = 200
+
+        else:
+
+            # First-time Google user: created outright, already verified,
+            # with no password and no OTP. Google supplies no phone number,
+            # so mobile stays NULL and is collected later by the profile
+            # update endpoint.
+            cursor.execute(
+                """
+                INSERT INTO users
+                (
+                    role_id,
+                    first_name,
+                    last_name,
+                    email,
+                    google_id,
+                    profile_image,
+                    email_verified,
+                    last_login_at,
+                    created_at,
+                    updated_at
+                )
+                VALUES
+                (%s, %s, %s, %s, %s, %s, TRUE, NOW(), NOW(), NOW())
+                RETURNING id, role_id
+                """,
+                [
+                    2,
+                    claims.get("given_name"),
+                    claims.get("family_name"),
+                    email,
+                    google_id,
+                    claims.get("picture")
+                ]
+            )
+
+            user_id, role_id = cursor.fetchone()
+
+            message = "Account created successfully."
+            response_status = 201
+
+        connection.commit()
+
+        columns_str = ", ".join(USER_PROFILE_COLUMNS)
+
+        cursor.execute(
+            f"""
+            SELECT {columns_str}
+            FROM users
+            WHERE id = %s
+            """,
+            [user_id]
+        )
+
+        profile_row = cursor.fetchone()
+
+    return {
+        "message": message,
+        "token": _issue_user_token(user_id, role_id),
+        "user": _serialize_user_profile(profile_row)
+    }, response_status
 
 
 def get_user_profile_logic(user_id):

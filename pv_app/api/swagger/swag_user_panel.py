@@ -344,8 +344,18 @@ products_management_schema = extend_schema_view(
            variant_<index>_images field name. There is no limit on the
            number of images per variant.
 
-        display_order is assigned automatically in submission order,
-        starting at 1 for a new product/variant, UNLESS a same-indexed
+        VARIANT ORDER — each variant may carry its own display_order (a
+        positive integer) controlling where it sits in the product's
+        variant list. Omit it and variants are numbered 1, 2, 3... in the
+        order they were sent. On UPDATE, an omitted display_order leaves an
+        existing variant's position untouched, and a newly added variant is
+        appended after the current maximum. Variants are returned sorted by
+        display_order ASC (ties, and variants predating this field, fall
+        back to id ASC).
+
+        IMAGE ORDER — display_order for variant IMAGES is separate from the
+        above. It is assigned automatically in submission order, starting at
+        1 for a new product/variant, UNLESS a same-indexed
         variant_<index>_image_orders field is sent — see UPDATE's
         documentation below for the full rules; they apply identically
         here since new-image upload uses one shared code path for both.

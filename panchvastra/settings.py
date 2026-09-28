@@ -248,6 +248,7 @@ REST_FRAMEWORK = {
     'DEFAULT_THROTTLE_RATES': {
         'anon': '30/minute',
         'otp': '5/minute',
+        'google_login': '10/minute',
         'admin_login': '10/minute',
     },
 }
@@ -276,6 +277,16 @@ SPECTACULAR_SETTINGS = {
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+
+
+# "Sign in with Google" — the OAuth *client ID* from Google Cloud Console
+# (APIs & Services > Credentials > OAuth client ID, type "Web application").
+# This is public by design: the same value is embedded in the frontend. Its
+# job here is to be the expected `aud` claim when verifying an ID token, so
+# a token Google issued for some OTHER site cannot be replayed against ours.
+# No client secret is needed — that belongs to the authorization-code flow,
+# which we don't use since we only authenticate, never call Google APIs.
+GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID")
 
 
 RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")

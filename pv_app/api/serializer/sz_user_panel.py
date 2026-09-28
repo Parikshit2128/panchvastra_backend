@@ -176,6 +176,15 @@ class ProductVariantSerializer(serializers.Serializer):
     is_default = serializers.BooleanField(required=False, default=False)
     is_active = serializers.BooleanField(required=False, default=True)
 
+    # Position of this variant inside its product's variant list. Omitted
+    # means "keep/append at the end" — the admin only sets it when they
+    # actually care about the order.
+    display_order = serializers.IntegerField(
+        min_value=1,
+        required=False,
+        allow_null=True
+    )
+
     sizes = ProductVariantSizeSerializer(
         many=True
     )

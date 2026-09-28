@@ -10,6 +10,16 @@ class UserLoginSerializer(serializers.Serializer):
     email = serializers.EmailField()
 
 
+class GoogleLoginSerializer(serializers.Serializer):
+    """The `credential` string Google Identity Services hands the browser.
+
+    Nothing else is accepted on purpose — no email, no name. Every user
+    detail is read from the token's verified claims instead, so a caller
+    cannot pair a valid token with someone else's email.
+    """
+    credential = serializers.CharField()
+
+
 class AdminLoginSerializer(serializers.Serializer):
     email = serializers.EmailField()
     password = serializers.CharField(max_length=128, write_only=True)

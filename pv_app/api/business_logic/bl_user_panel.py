@@ -1569,7 +1569,7 @@ def get_product_listing(
         LEFT JOIN LATERAL (
             SELECT * FROM public.product_variants pv 
             WHERE pv.product_id = p.id AND pv.is_deleted = FALSE AND pv.is_active = TRUE
-            ORDER BY pv.is_default DESC, pv.selling_price ASC LIMIT 1
+            ORDER BY pv.is_default DESC, pv.display_order ASC NULLS LAST, pv.selling_price ASC LIMIT 1
         ) v ON TRUE
 
         WHERE {where_clause}
@@ -1686,6 +1686,7 @@ def get_product_detail(product_id):
                     'selling_price', v.selling_price,
                     'cost_price', v.cost_price,
                     'is_default', v.is_default,
+                    'display_order', v.display_order,
                     'images', (
                         SELECT COALESCE(json_agg(json_build_object(
                             'id', img.id,
@@ -1705,7 +1706,7 @@ def get_product_detail(product_id):
                         FROM public.product_variant_sizes sz
                         WHERE sz.variant_id = v.id AND sz.is_deleted = FALSE AND sz.is_active = TRUE
                     )
-                )), '[]')
+                ) ORDER BY v.display_order ASC NULLS LAST, v.id ASC), '[]')
                 FROM public.product_variants v
                 WHERE v.product_id = p.id AND v.is_deleted = FALSE AND v.is_active = TRUE
             ) AS variants,
@@ -2996,7 +2997,15 @@ def create_product(data, user_id):
             # Insert Product Variants
             # --------------------------------------------------
 
-            for variant in variants:
+            for index, variant in enumerate(variants):
+
+                # A brand-new product has no existing variants to append
+                # after, so an omitted display_order simply follows the
+                # order the variants were sent in.
+                display_order = variant.get("display_order")
+
+                if display_order is None:
+                    display_order = index + 1
 
                 cursor.execute(
                     """
@@ -3010,6 +3019,7 @@ def create_product(data, user_id):
                         cost_price,
                         is_default,
                         is_active,
+                        display_order,
                         created_by,
                         updated_by,
                         created_at,
@@ -3017,6 +3027,7 @@ def create_product(data, user_id):
                     )
                     VALUES
                     (
+                        %s,
                         %s,
                         %s,
                         %s,
@@ -3041,6 +3052,7 @@ def create_product(data, user_id):
                         variant.get("cost_price"),
                         variant["is_default"],
                         variant["is_active"],
+                        display_order,
                         user_id,
                         user_id
                     ]
@@ -4274,8 +4286,13 @@ def update_product(data, user_id):
 
                 variant_id = variant.get("id")
 
+                display_order = variant.get("display_order")
+
                 if variant_id:
 
+                    # COALESCE keeps the stored position when the payload
+                    # omits display_order, so an edit that only touches
+                    # price or stock never reshuffles the variants.
                     cursor.execute(
                         """
                         UPDATE product_variants
@@ -4287,6 +4304,7 @@ def update_product(data, user_id):
                             cost_price=%s,
                             is_default=%s,
                             is_active=%s,
+                            display_order=COALESCE(%s, display_order),
                             updated_by=%s,
                             updated_at=NOW()
                         WHERE id=%s
@@ -4301,6 +4319,7 @@ def update_product(data, user_id):
                             variant.get("cost_price"),
                             variant["is_default"],
                             variant.get("is_active", True),
+                            display_order,
                             user_id,
                             variant_id,
                             product_id
@@ -4308,6 +4327,22 @@ def update_product(data, user_id):
                     )
 
                 else:
+
+                    # A variant added during an update goes last unless the
+                    # admin said where to put it.
+                    if display_order is None:
+
+                        cursor.execute(
+                            """
+                            SELECT COALESCE(MAX(display_order), 0)
+                            FROM product_variants
+                            WHERE product_id=%s
+                            AND is_deleted=FALSE
+                            """,
+                            [product_id]
+                        )
+
+                        display_order = cursor.fetchone()[0] + 1
 
                     cursor.execute(
                         """
@@ -4321,6 +4356,7 @@ def update_product(data, user_id):
                             cost_price,
                             is_default,
                             is_active,
+                            display_order,
                             created_by,
                             updated_by,
                             created_at,
@@ -4328,6 +4364,7 @@ def update_product(data, user_id):
                         )
                         VALUES
                         (
+                            %s,
                             %s,
                             %s,
                             %s,
@@ -4352,6 +4389,7 @@ def update_product(data, user_id):
                             variant.get("cost_price"),
                             variant["is_default"],
                             variant.get("is_active", True),
+                            display_order,
                             user_id,
                             user_id
                         ]
