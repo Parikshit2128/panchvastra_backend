@@ -1515,7 +1515,11 @@ def get_product_listing(
         "price_low_to_high": "min_selling_price ASC",
         "price_high_to_low": "min_selling_price DESC",
         "latest": "p.created_at DESC",
-        "oldest": "p.created_at ASC"
+        "oldest": "p.created_at ASC",
+        # The admin-curated order. NULLS LAST keeps products that predate
+        # display_order (or were never positioned) after the arranged ones
+        # instead of jumping to the front.
+        "display_order": "p.display_order ASC NULLS LAST, p.created_at DESC"
     }
     order_by = sort_mapping.get(sort_by, "p.created_at DESC")
 
@@ -1552,6 +1556,7 @@ def get_product_listing(
             ) AS tags,
 
             -- Extract tracking variant data (Default variant, fallback to cheapest variant)
+            p.display_order,
             v.id AS variant_id, v.sku, v.color, v.mrp, v.selling_price,
             
             -- Primary Image for thumbnail
@@ -1672,7 +1677,7 @@ def get_product_detail(product_id):
 
     sql = """
         SELECT 
-            p.id, p.name, p.description, p.fabric, p.gsm, p.is_featured, p.is_new_arrival, p.created_at, p.key_highlights,
+            p.id, p.name, p.description, p.fabric, p.gsm, p.is_featured, p.is_new_arrival, p.created_at, p.key_highlights, p.display_order,
             c.id AS category_id, c.name AS category_name,
             sc.id AS sub_category_id, sc.name AS sub_category_name,
             
@@ -2731,6 +2736,8 @@ def create_product(data, user_id):
     tags = data.get("tags", [])
     variants = data.get("variants", [])
 
+    display_order = data.get("display_order")
+
     with transaction.atomic(), connection.cursor() as cursor:
 
             # --------------------------------------------------
@@ -2899,6 +2906,20 @@ def create_product(data, user_id):
             # Insert Product
             # --------------------------------------------------
 
+            # Omitted display_order means "put it last" — same rule the
+            # category and sub category listings already follow.
+            if display_order is None:
+
+                cursor.execute(
+                    """
+                    SELECT COALESCE(MAX(display_order), 0)
+                    FROM products
+                    WHERE is_deleted = FALSE
+                    """
+                )
+
+                display_order = cursor.fetchone()[0] + 1
+
             cursor.execute(
                 """
                 INSERT INTO products
@@ -2913,6 +2934,7 @@ def create_product(data, user_id):
                     is_new_arrival,
                     key_highlights,
                     is_active,
+                    display_order,
                     created_by,
                     updated_by,
                     created_at,
@@ -2920,6 +2942,7 @@ def create_product(data, user_id):
                 )
                 VALUES
                 (
+                    %s,
                     %s,
                     %s,
                     %s,
@@ -2948,6 +2971,7 @@ def create_product(data, user_id):
                     is_new_arrival,
                     key_highlights,
                     is_active,
+                    display_order,
                     user_id,
                     user_id
                 ]
@@ -4091,6 +4115,7 @@ def update_product(data, user_id):
                     is_new_arrival=%s,
                     key_highlights=%s,
                     is_active=%s,
+                    display_order=COALESCE(%s, display_order),
                     updated_by=%s,
                     updated_at=NOW()
                 WHERE id=%s
@@ -4107,6 +4132,7 @@ def update_product(data, user_id):
                     is_new_arrival,
                     key_highlights,
                     is_active,
+                    data.get("display_order"),
                     user_id,
                     product_id
                 ]

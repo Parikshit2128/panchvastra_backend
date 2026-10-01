@@ -302,10 +302,12 @@ products_management_schema = extend_schema_view(
                 required=False,
                 description="""
                 Sorting options:
-                - latest
+                - latest (default)
                 - oldest
                 - price_low_to_high
                 - price_high_to_low
+                - display_order (the admin-curated order; products with no
+                  position set come last, newest first)
                 """
             ),
             OpenApiParameter(

@@ -248,6 +248,14 @@ class CreateProductSerializer(serializers.Serializer):
 
     is_active = serializers.BooleanField(default=True)
 
+    # Where this product sits in a curated listing. Omitted means "put it
+    # last", so the admin only sets it when they care about the position.
+    display_order = serializers.IntegerField(
+        min_value=1,
+        required=False,
+        allow_null=True
+    )
+
     key_highlights = KeyHighlightSerializer(
         many=True,
         required=False,
