@@ -466,8 +466,7 @@ class UpdateOrderStatusSerializer(serializers.Serializer):
     id = serializers.IntegerField()
     order_status = serializers.ChoiceField(choices=[
         "PLACED",
-        "CONFIRMED",
-        "PACKED",
+        "PROCESSING",
         "SHIPPED",
         "OUT_FOR_DELIVERY",
         "DELIVERED",
@@ -475,6 +474,48 @@ class UpdateOrderStatusSerializer(serializers.Serializer):
     ])
     tracking_id = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     courier_name = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+
+    # The "Expected by" date both order screens show. Sent with any status
+    # update, so the admin can set or revise it without a separate call.
+    expected_delivery_date = serializers.DateField(required=False, allow_null=True)
+
+    # Optional free text stored against this transition and listed in the
+    # admin's Order Timeline panel.
+    note = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+
+
+class CreateOrderNoteSerializer(serializers.Serializer):
+    """One internal note on an order. allow_blank stays at its default of
+    False so an empty note is rejected rather than stored as a blank row."""
+    order_id = serializers.IntegerField()
+    note = serializers.CharField(max_length=2000)
+
+
+class UpdateOrderAddressSerializer(serializers.Serializer):
+    """Corrects the shipping address copied onto an order.
+
+    Every address field is optional so the admin can send only what they are
+    changing; the business logic rejects a call that carries none of them.
+    The customer's email is deliberately absent — it identifies the account,
+    not the delivery, and changing it here would silently diverge from it.
+    """
+    id = serializers.IntegerField()
+
+    customer_name = serializers.CharField(max_length=150, required=False)
+    customer_mobile = serializers.CharField(max_length=20, required=False)
+
+    address_line_1 = serializers.CharField(max_length=255, required=False)
+    address_line_2 = serializers.CharField(
+        max_length=255, required=False, allow_blank=True, allow_null=True
+    )
+    landmark = serializers.CharField(
+        max_length=255, required=False, allow_blank=True, allow_null=True
+    )
+
+    city = serializers.CharField(max_length=100, required=False)
+    state = serializers.CharField(max_length=100, required=False)
+    country = serializers.CharField(max_length=100, required=False)
+    pincode = serializers.CharField(max_length=20, required=False)
 
 
 class NotifyMeAdminItemSerializer(serializers.Serializer):

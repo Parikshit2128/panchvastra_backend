@@ -2211,6 +2211,61 @@ def delete_coupon(coupon_id, user_id):
     }, status.HTTP_200_OK
 
 
+# The five steps the order timeline renders, in order, each paired with the
+# orders column that records when it was reached. CANCELLED is deliberately
+# not in here: it is not a step along the same line, it replaces the rest of
+# it (see build_order_timeline).
+ORDER_TIMELINE_STEPS = [
+    ("PLACED", "Order Placed", "ordered_at"),
+    ("PROCESSING", "Processing", "processing_at"),
+    ("SHIPPED", "Shipped", "shipped_at"),
+    ("OUT_FOR_DELIVERY", "Out for Delivery", "out_for_delivery_at"),
+    ("DELIVERED", "Delivered", "delivered_at")
+]
+
+ORDER_STATUS_LABELS = dict(
+    [(status_key, label) for status_key, label, _ in ORDER_TIMELINE_STEPS]
+    + [("CANCELLED", "Cancelled")]
+)
+
+
+def build_order_timeline(order):
+    """The five-step progress bar both the customer and admin screens draw.
+
+    Every step is always returned, so the frontend renders a fixed-length
+    track and only has to read `completed`/`at` per step rather than work
+    out which milestones exist. `at` is None for a step not yet reached.
+
+    A cancelled order keeps the steps it genuinely completed before it was
+    cancelled and gets a CANCELLED step appended — showing a greyed-out
+    "Delivered" on a cancelled order would be misleading.
+    """
+
+    timeline = []
+
+    for status_key, label, column in ORDER_TIMELINE_STEPS:
+
+        timeline.append({
+            "status": status_key,
+            "label": label,
+            "at": order.get(column),
+            "completed": order.get(column) is not None
+        })
+
+    if order.get("order_status") == "CANCELLED":
+
+        timeline = [step for step in timeline if step["completed"]]
+
+        timeline.append({
+            "status": "CANCELLED",
+            "label": "Cancelled",
+            "at": order.get("cancelled_at"),
+            "completed": True
+        })
+
+    return timeline
+
+
 def get_order_listing(
     user_id=None,
     page=1,
@@ -2240,8 +2295,7 @@ def get_order_listing(
         where_conditions.append("""
             o.order_status IN (
                 'PLACED',
-                'CONFIRMED',
-                'PACKED',
+                'PROCESSING',
                 'SHIPPED',
                 'OUT_FOR_DELIVERY'
             )
@@ -2298,7 +2352,14 @@ def get_order_listing(
             o.payment_status,
             o.payment_method,
             o.grand_total,
+            o.user_id,
             o.ordered_at,
+            o.processing_at,
+            o.shipped_at,
+            o.out_for_delivery_at,
+            o.delivered_at,
+            o.cancelled_at,
+            o.expected_delivery_date,
             o.tracking_id,
             o.courier_name,
 
@@ -2393,6 +2454,13 @@ def get_order_listing(
 
         item["grand_total"] = float(item["grand_total"])
 
+        item["status_label"] = ORDER_STATUS_LABELS.get(
+            item["order_status"],
+            item["order_status"]
+        )
+
+        item["timeline"] = build_order_timeline(item)
+
         if isinstance(item["items"], str):
             item["items"] = json.loads(item["items"])
 
@@ -2469,12 +2537,36 @@ def get_order_detail(order_id, user_id=None):
             o.tax_amount,
             o.grand_total,
 
+            o.user_id,
+
             o.ordered_at,
+            o.processing_at,
             o.shipped_at,
+            o.out_for_delivery_at,
             o.delivered_at,
-            o.cancelled_at
+            o.cancelled_at,
+            o.expected_delivery_date,
+
+            -- The gateway reference the admin screen shows as "Transaction
+            -- ID", plus when it actually went through. Kept on the payments
+            -- row, so it is pulled laterally rather than duplicated onto
+            -- orders. A COD order simply has no payments row and both come
+            -- back NULL.
+            pay.razorpay_payment_id AS transaction_id,
+            pay.paid_at
 
         FROM public.orders o
+
+        LEFT JOIN LATERAL (
+            SELECT
+                p.razorpay_payment_id,
+                p.updated_at AS paid_at
+            FROM public.payments p
+            WHERE p.order_id = o.id
+            AND p.payment_status = 'SUCCESS'
+            ORDER BY p.id DESC
+            LIMIT 1
+        ) pay ON TRUE
 
         WHERE {where_clause}
 
@@ -2566,21 +2658,115 @@ def get_order_detail(order_id, user_id=None):
     order["tax_amount"] = float(order["tax_amount"] or 0)
     order["grand_total"] = float(order["grand_total"] or 0)
 
+    # The event log and the internal notes are two different things: the
+    # history rows are written automatically on every status change and are
+    # safe to show a customer, the notes are admin-only free text.
+    with connection.cursor() as cursor:
+
+        cursor.execute(
+            """
+            SELECT
+                h.id,
+                h.order_status,
+                h.note,
+                h.created_at,
+                u.first_name,
+                u.last_name
+            FROM public.order_status_history h
+            LEFT JOIN public.users u ON u.id = h.created_by
+            WHERE h.order_id = %s
+            ORDER BY h.created_at DESC, h.id DESC
+            """,
+            [order_id]
+        )
+
+        history = [
+            {
+                "id": row[0],
+                "order_status": row[1],
+                "label": ORDER_STATUS_LABELS.get(row[1], row[1]),
+                "note": row[2],
+                "created_at": row[3],
+                "created_by": " ".join(
+                    part for part in [row[4], row[5]] if part
+                ) or None
+            }
+            for row in cursor.fetchall()
+        ]
+
+        notes = []
+
+        # Internal notes are never exposed to the customer-facing call, which
+        # is the only caller that passes a user_id.
+        if user_id is None:
+
+            cursor.execute(
+                """
+                SELECT
+                    n.id,
+                    n.note,
+                    n.created_at,
+                    u.first_name,
+                    u.last_name
+                FROM public.order_notes n
+                LEFT JOIN public.users u ON u.id = n.created_by
+                WHERE n.order_id = %s
+                AND n.is_deleted = FALSE
+                ORDER BY n.created_at DESC, n.id DESC
+                """,
+                [order_id]
+            )
+
+            notes = [
+                {
+                    "id": row[0],
+                    "note": row[1],
+                    "created_at": row[2],
+                    "created_by": " ".join(
+                        part for part in [row[3], row[4]] if part
+                    ) or None
+                }
+                for row in cursor.fetchall()
+            ]
+
     response = {
 
         "id": order["id"],
+
+        "user_id": order["user_id"],
 
         "order_number": order["order_number"],
 
         "order_status": order["order_status"],
 
+        "status_label": ORDER_STATUS_LABELS.get(
+            order["order_status"],
+            order["order_status"]
+        ),
+
+        "timeline": build_order_timeline(order),
+
+        "status_history": history,
+
+        "notes": notes,
+
         "payment_status": order["payment_status"],
 
         "payment_method": order["payment_method"],
 
+        "transaction_id": order["transaction_id"],
+
+        "paid_at": order["paid_at"],
+
+        "expected_delivery_date": order["expected_delivery_date"],
+
         "ordered_at": order["ordered_at"],
 
+        "processing_at": order["processing_at"],
+
         "shipped_at": order["shipped_at"],
+
+        "out_for_delivery_at": order["out_for_delivery_at"],
 
         "delivered_at": order["delivered_at"],
 
@@ -2642,19 +2828,135 @@ def get_order_detail(order_id, user_id=None):
 
 
 
-def update_order_status(data):
+# Which orders column records the moment each status was first reached.
+ORDER_STATUS_TIMESTAMP_COLUMNS = {
+    "PROCESSING": "processing_at",
+    "SHIPPED": "shipped_at",
+    "OUT_FOR_DELIVERY": "out_for_delivery_at",
+    "DELIVERED": "delivered_at",
+    "CANCELLED": "cancelled_at"
+}
+
+
+@transaction.atomic
+def update_order_status(data, user_id=None):
 
     order_id = data.get("id")
     new_status = data.get("order_status")
     tracking_id = data.get("tracking_id")
     courier_name = data.get("courier_name")
+    expected_delivery_date = data.get("expected_delivery_date")
+    note = data.get("note")
+
+    with connection.cursor() as cursor:
+
+        cursor.execute(
+            """
+            SELECT order_status
+            FROM orders
+            WHERE id = %s
+            AND is_deleted = FALSE
+            """,
+            [order_id]
+        )
+
+        row = cursor.fetchone()
+
+        if not row:
+            return {
+                "message": "Order not found.",
+                "data": {}
+            }, status.HTTP_404_NOT_FOUND
+
+        current_status = row[0]
+
+    set_parts = [
+        "order_status = %s",
+        "updated_at = NOW()"
+    ]
+    values = [new_status]
+
+    # Stamp the milestone timestamp the first time a status is reached;
+    # COALESCE means re-saving the same status later doesn't overwrite it.
+    timestamp_column = ORDER_STATUS_TIMESTAMP_COLUMNS.get(new_status)
+
+    if timestamp_column:
+        set_parts.append(
+            f"{timestamp_column} = COALESCE({timestamp_column}, NOW())"
+        )
+
+    if tracking_id is not None:
+        set_parts.append("tracking_id = %s")
+        values.append(tracking_id)
+
+    if courier_name is not None:
+        set_parts.append("courier_name = %s")
+        values.append(courier_name)
+
+    if expected_delivery_date is not None:
+        set_parts.append("expected_delivery_date = %s")
+        values.append(expected_delivery_date)
+
+    values.append(order_id)
+
+    sql = f"""
+        UPDATE orders
+        SET {', '.join(set_parts)}
+        WHERE id = %s
+        AND is_deleted = FALSE
+    """
+
+    with connection.cursor() as cursor:
+
+        cursor.execute(sql, values)
+
+        # One history row per actual transition, which is what the admin's
+        # Order Timeline panel lists. Re-saving the same status (to attach a
+        # tracking id, say) is not a transition and is not logged, unless the
+        # admin typed a note to go with it.
+        if new_status != current_status or note:
+
+            cursor.execute(
+                """
+                INSERT INTO public.order_status_history
+                (
+                    order_id,
+                    order_status,
+                    note,
+                    created_by,
+                    created_at
+                )
+                VALUES (%s, %s, %s, %s, NOW())
+                """,
+                [order_id, new_status, note, user_id]
+            )
+
+    order_data, _ = get_order_detail(order_id=order_id)
+
+    return {
+        "message": "Order status updated successfully.",
+        "data": order_data.get("data")
+    }, status.HTTP_200_OK
+
+
+
+def create_order_note(data, user_id):
+    """Add an internal note to an order (admin only).
+
+    Separate from order_status_history: that table logs what happened to the
+    order, this one holds what staff wrote about it. Notes never reach the
+    customer-facing order detail.
+    """
+
+    order_id = data.get("order_id")
+    note = data.get("note").strip()
 
     with connection.cursor() as cursor:
 
         cursor.execute(
             """
             SELECT 1
-            FROM orders
+            FROM public.orders
             WHERE id = %s
             AND is_deleted = FALSE
             """,
@@ -2667,48 +2969,202 @@ def update_order_status(data):
                 "data": {}
             }, status.HTTP_404_NOT_FOUND
 
-    set_parts = [
-        "order_status = %s",
-        "updated_at = NOW()"
-    ]
-    values = [new_status]
+        cursor.execute(
+            """
+            INSERT INTO public.order_notes
+            (
+                order_id,
+                note,
+                created_by,
+                created_at,
+                updated_at
+            )
+            VALUES (%s, %s, %s, NOW(), NOW())
+            RETURNING id, created_at
+            """,
+            [order_id, note, user_id]
+        )
 
-    # Stamp the milestone timestamp the first time a status is reached;
-    # COALESCE means re-saving the same status later doesn't overwrite it.
-    if new_status == "SHIPPED":
-        set_parts.append("shipped_at = COALESCE(shipped_at, NOW())")
-    elif new_status == "DELIVERED":
-        set_parts.append("delivered_at = COALESCE(delivered_at, NOW())")
-    elif new_status == "CANCELLED":
-        set_parts.append("cancelled_at = COALESCE(cancelled_at, NOW())")
+        note_id, created_at = cursor.fetchone()
 
-    if tracking_id is not None:
-        set_parts.append("tracking_id = %s")
-        values.append(tracking_id)
+        cursor.execute(
+            """
+            SELECT first_name, last_name
+            FROM public.users
+            WHERE id = %s
+            """,
+            [user_id]
+        )
 
-    if courier_name is not None:
-        set_parts.append("courier_name = %s")
-        values.append(courier_name)
+        author_row = cursor.fetchone() or (None, None)
 
-    values.append(order_id)
+    return {
+        "message": "Note added successfully.",
+        "data": {
+            "id": note_id,
+            "order_id": order_id,
+            "note": note,
+            "created_at": created_at,
+            "created_by": " ".join(
+                part for part in author_row if part
+            ) or None
+        }
+    }, status.HTTP_201_CREATED
 
-    sql = f"""
-        UPDATE orders
-        SET {', '.join(set_parts)}
-        WHERE id = %s
-        AND is_deleted = FALSE
-    """
+
+def delete_order_note(note_id, user_id):
+    """Soft delete an internal note. Any admin can remove any note — these
+    are shared operational scratch, not personal records."""
 
     with connection.cursor() as cursor:
-        cursor.execute(sql, values)
+
+        cursor.execute(
+            """
+            UPDATE public.order_notes
+            SET
+                is_deleted = TRUE,
+                updated_at = NOW()
+            WHERE id = %s
+            AND is_deleted = FALSE
+            RETURNING id
+            """,
+            [note_id]
+        )
+
+        if not cursor.fetchone():
+            return {
+                "message": "Note not found.",
+                "data": {}
+            }, status.HTTP_404_NOT_FOUND
+
+    return {
+        "message": "Note deleted successfully.",
+        "data": {}
+    }, status.HTTP_200_OK
+
+
+# Changing where a parcel goes stops being meaningful once it has arrived or
+# the order is dead, so those two states are closed to edits. SHIPPED and
+# OUT_FOR_DELIVERY stay open: a courier can still be redirected, and that is
+# exactly when a wrong address gets noticed.
+ORDER_ADDRESS_LOCKED_STATUSES = ("DELIVERED", "CANCELLED")
+
+ORDER_ADDRESS_FIELDS = [
+    "customer_name",
+    "customer_mobile",
+    "address_line_1",
+    "address_line_2",
+    "landmark",
+    "city",
+    "state",
+    "country",
+    "pincode"
+]
+
+
+@transaction.atomic
+def update_order_address(data, user_id):
+    """Correct the shipping address stored on an order (admin only).
+
+    The order carries its own copy of the address rather than pointing at the
+    user's address book, so editing here changes this order only — the
+    customer's saved addresses are untouched.
+    """
+
+    order_id = data.get("id")
+
+    with connection.cursor() as cursor:
+
+        cursor.execute(
+            """
+            SELECT order_status
+            FROM public.orders
+            WHERE id = %s
+            AND is_deleted = FALSE
+            """,
+            [order_id]
+        )
+
+        row = cursor.fetchone()
+
+        if not row:
+            return {
+                "message": "Order not found.",
+                "data": {}
+            }, status.HTTP_404_NOT_FOUND
+
+        current_status = row[0]
+
+        if current_status in ORDER_ADDRESS_LOCKED_STATUSES:
+            return {
+                "message": (
+                    "The shipping address cannot be changed for a "
+                    f"{ORDER_STATUS_LABELS.get(current_status, current_status).lower()} order."
+                ),
+                "data": {}
+            }, status.HTTP_400_BAD_REQUEST
+
+        # Only the fields actually sent are written, so a partial edit (just
+        # the pincode, say) doesn't blank out the rest of the address.
+        set_parts = []
+        values = []
+
+        for field in ORDER_ADDRESS_FIELDS:
+
+            if field in data:
+                set_parts.append(f"{field} = %s")
+                values.append(data.get(field))
+
+        if not set_parts:
+            return {
+                "message": "No address fields were provided.",
+                "data": {}
+            }, status.HTTP_400_BAD_REQUEST
+
+        set_parts.append("updated_at = NOW()")
+        values.append(order_id)
+
+        cursor.execute(
+            f"""
+            UPDATE public.orders
+            SET {', '.join(set_parts)}
+            WHERE id = %s
+            AND is_deleted = FALSE
+            """,
+            values
+        )
+
+        # An address change is worth a trace, and the notes panel is where an
+        # admin would look for one. Written as a note rather than a status
+        # history row because nothing about the order's status changed.
+        cursor.execute(
+            """
+            INSERT INTO public.order_notes
+            (
+                order_id,
+                note,
+                created_by,
+                created_at,
+                updated_at
+            )
+            VALUES (%s, %s, %s, NOW(), NOW())
+            """,
+            [
+                order_id,
+                "Shipping address updated: "
+                + ", ".join(
+                    field for field in ORDER_ADDRESS_FIELDS if field in data
+                ),
+                user_id
+            ]
+        )
 
     order_data, _ = get_order_detail(order_id=order_id)
 
     return {
-        "message": "Order status updated successfully.",
+        "message": "Shipping address updated successfully.",
         "data": order_data.get("data")
     }, status.HTTP_200_OK
-
 
 
 @transaction.atomic
@@ -5067,6 +5523,16 @@ def delete_address(address_id, user_id):
     if not address_id:
         return {
             "message": "id is required.",
+            "data": {}
+        }, status.HTTP_400_BAD_REQUEST
+
+    # The id arrives as a query-string, so it is always a str. It is compared
+    # below against integer keys from the database, and "17" never equals 17.
+    try:
+        address_id = int(address_id)
+    except (TypeError, ValueError):
+        return {
+            "message": "id must be an integer.",
             "data": {}
         }, status.HTTP_400_BAD_REQUEST
 

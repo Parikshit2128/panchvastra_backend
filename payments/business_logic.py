@@ -262,6 +262,15 @@ def create_checkout_payment(validated_data, user_id):
 
                 order_id = cursor.fetchone()[0]
 
+                # The first entry of the order's timeline. Written here so the
+                # history is complete from the moment the order exists, rather
+                # than only from its first admin status change.
+                cursor.execute("""
+                    INSERT INTO public.order_status_history
+                        (order_id, order_status, created_at)
+                    VALUES (%s, 'PLACED', NOW())
+                """, [order_id])
+
                 # 6. Insert order items
                 for item in items:
 
@@ -317,7 +326,12 @@ def create_checkout_payment(validated_data, user_id):
                 UPDATE public.payments SET payment_status='FAILED', updated_at=NOW() WHERE id=%s
             """, [payment_row_id])
             cursor.execute("""
-                UPDATE public.orders SET payment_status='FAILED', order_status='CANCELLED', updated_at=NOW() WHERE id=%s
+                UPDATE public.orders SET payment_status='FAILED', order_status='CANCELLED', cancelled_at=COALESCE(cancelled_at, NOW()), updated_at=NOW() WHERE id=%s
+            """, [order_id])
+            cursor.execute("""
+                INSERT INTO public.order_status_history
+                    (order_id, order_status, note, created_at)
+                VALUES (%s, 'CANCELLED', 'Payment could not be initiated.', NOW())
             """, [order_id])
 
         return {
@@ -558,6 +572,14 @@ def create_cod_order(validated_data, user_id):
                 ])
 
                 order_id = cursor.fetchone()[0]
+
+                # The first entry of the order's timeline, same as the
+                # Razorpay path above.
+                cursor.execute("""
+                    INSERT INTO public.order_status_history
+                        (order_id, order_status, created_at)
+                    VALUES (%s, 'PLACED', NOW())
+                """, [order_id])
 
                 # 6. Order items + stock decrement. The rows are already locked
                 # (step 3), but the WHERE guard is kept as a belt-and-braces check.

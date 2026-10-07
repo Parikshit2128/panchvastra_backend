@@ -5,7 +5,7 @@ from drf_spectacular.utils import (
     OpenApiTypes
 )
 
-from pv_app.api.serializer.sz_user_panel import AddToCartSerializer, CouponSerializer, CreateAddressSerializer, CreateAuthCarouselImageSerializer, CreateCategorySerializer, CreateProductSerializer, CreateSubCategorySerializer, NotifyMeAdminListResponseSerializer, NotifyMeSerializer, ProductImageUploadSerializer, UpdateAddressSerializer, UpdateAuthCarouselImageSerializer, UpdateCartSerializer, UpdateCategorySerializer, UpdateCouponSerializer, UpdateOrderStatusSerializer, UpdateProductSerializer, UpdateSubCategorySerializer
+from pv_app.api.serializer.sz_user_panel import AddToCartSerializer, CouponSerializer, CreateAddressSerializer, CreateAuthCarouselImageSerializer, CreateCategorySerializer, CreateOrderNoteSerializer, CreateProductSerializer, CreateSubCategorySerializer, NotifyMeAdminListResponseSerializer, NotifyMeSerializer, ProductImageUploadSerializer, UpdateAddressSerializer, UpdateAuthCarouselImageSerializer, UpdateCartSerializer, UpdateCategorySerializer, UpdateCouponSerializer, UpdateOrderAddressSerializer, UpdateOrderStatusSerializer, UpdateProductSerializer, UpdateSubCategorySerializer
 
 
 auth_carousel_schema = extend_schema_view(
@@ -736,6 +736,76 @@ notify_me_schema = extend_schema_view(
     ),
 )
 
+
+
+order_notes_schema = extend_schema_view(
+
+    post=extend_schema(
+        tags=["Order History"],
+        summary="Add an internal order note",
+        description=(
+            "Admin only. Internal notes are never returned by the "
+            "customer-facing order detail call."
+        ),
+        request=CreateOrderNoteSerializer
+    ),
+
+    delete=extend_schema(
+        tags=["Order History"],
+        summary="Delete an internal order note",
+        description="Admin only. Soft delete — the row is kept.",
+        parameters=[
+            OpenApiParameter(
+                name="id",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description="Note id"
+            )
+        ]
+    )
+)
+
+
+order_address_schema = extend_schema_view(
+
+    put=extend_schema(
+        tags=["Order History"],
+        summary="Edit an order's shipping address",
+        description=(
+            "Admin only. Changes the address copy stored on THIS order; the "
+            "customer's saved address book is untouched. Send only the "
+            "fields being changed. Refused once the order is delivered or "
+            "cancelled. The change is recorded as an internal note."
+        ),
+        request=UpdateOrderAddressSerializer
+    )
+)
+
+
+order_invoice_schema = extend_schema_view(
+
+    get=extend_schema(
+        tags=["Order History"],
+        summary="Download order invoice (PDF)",
+        description=(
+            "Streams the order's invoice as application/pdf, not JSON. A "
+            "customer token can only download an invoice for their own "
+            "order; an admin token can download any. Errors still come back "
+            "as JSON."
+        ),
+        parameters=[
+            OpenApiParameter(
+                name="id",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description="Order id"
+            )
+        ],
+        responses={200: OpenApiTypes.BINARY}
+    )
+)
 
 
 orders_schema = extend_schema_view(

@@ -1,15 +1,18 @@
 import json
 
+from django.http import HttpResponse
+
 from rest_framework.decorators import api_view, parser_classes
 from rest_framework.parsers import JSONParser, MultiPartParser, FormParser
 from rest_framework.exceptions import ValidationError
 from rest_framework import status
 
 from helpers.middleware import user_authentication_required
+from helpers.invoice import build_invoice_pdf
 from helpers.utils import generic_response_handler, validate_image_files
-from pv_app.api.business_logic.bl_user_panel import add_to_cart, create_address, create_auth_carousel_image, create_category, create_coupon, create_notify_me_request, create_product, create_sub_category, delete_address, delete_auth_carousel_image, delete_cart_item, delete_category, delete_coupon, delete_notify_me_request, delete_product, delete_sub_category, get_addresses, get_auth_carousel_images, get_cart, get_categories, get_coupons, get_notify_me_requests, get_order_detail, get_order_listing, get_product_detail, get_product_listing, get_sub_categories, update_address, update_auth_carousel_image, update_cart_quantity, update_category, update_coupon, update_order_status, update_product, update_sub_category
-from pv_app.api.serializer.sz_user_panel import AddToCartSerializer, CouponSerializer, CreateAddressSerializer, CreateAuthCarouselImageSerializer, CreateCategorySerializer, CreateProductSerializer, CreateSubCategorySerializer, NotifyMeSerializer, UpdateAddressSerializer, UpdateAuthCarouselImageSerializer, UpdateCartSerializer, UpdateCategorySerializer, UpdateCouponSerializer, UpdateOrderStatusSerializer, UpdateProductSerializer, UpdateSubCategorySerializer
-from pv_app.api.swagger.swag_user_panel import address_management_schema, auth_carousel_schema, categories_management_schema, products_management_schema, cart_management_schema, coupon_management_schema, notify_me_schema, orders_schema, sub_categories_management_schema
+from pv_app.api.business_logic.bl_user_panel import add_to_cart, create_address, create_auth_carousel_image, create_category, create_coupon, create_notify_me_request, create_order_note, create_product, create_sub_category, delete_address, delete_auth_carousel_image, delete_cart_item, delete_category, delete_coupon, delete_notify_me_request, delete_order_note, delete_product, delete_sub_category, get_addresses, get_auth_carousel_images, get_cart, get_categories, get_coupons, get_notify_me_requests, get_order_detail, get_order_listing, get_product_detail, get_product_listing, get_sub_categories, update_address, update_auth_carousel_image, update_cart_quantity, update_category, update_coupon, update_order_address, update_order_status, update_product, update_sub_category
+from pv_app.api.serializer.sz_user_panel import AddToCartSerializer, CouponSerializer, CreateAddressSerializer, CreateAuthCarouselImageSerializer, CreateCategorySerializer, CreateOrderNoteSerializer, CreateProductSerializer, CreateSubCategorySerializer, NotifyMeSerializer, UpdateAddressSerializer, UpdateAuthCarouselImageSerializer, UpdateCartSerializer, UpdateCategorySerializer, UpdateCouponSerializer, UpdateOrderAddressSerializer, UpdateOrderStatusSerializer, UpdateProductSerializer, UpdateSubCategorySerializer
+from pv_app.api.swagger.swag_user_panel import address_management_schema, auth_carousel_schema, categories_management_schema, products_management_schema, cart_management_schema, coupon_management_schema, notify_me_schema, order_address_schema, order_invoice_schema, order_notes_schema, orders_schema, sub_categories_management_schema
 
 
 def _parse_product_payload(request):
@@ -638,7 +641,8 @@ def orders(request):
         serializer.is_valid(raise_exception=True)
 
         return update_order_status(
-            serializer.validated_data
+            serializer.validated_data,
+            user_id=request.user_id
         )
 
     order_id = request.GET.get("id")
@@ -664,6 +668,102 @@ def orders(request):
         order_type=order_type,
         search=search if is_admin else None
     )
+
+
+@order_notes_schema
+@user_authentication_required(role_required=[1])
+@api_view(["POST", "DELETE"])
+@generic_response_handler
+def order_notes(request):
+    """Internal admin notes on an order. Reading them is part of the order
+    detail response, so there is no GET here."""
+
+    if request.method == "POST":
+
+        serializer = CreateOrderNoteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        return create_order_note(
+            serializer.validated_data,
+            user_id=request.user_id
+        )
+
+    note_id = request.GET.get("id")
+
+    if not note_id:
+        return {
+            "message": "Note id is required.",
+            "data": {}
+        }, status.HTTP_400_BAD_REQUEST
+
+    return delete_order_note(
+        note_id,
+        user_id=request.user_id
+    )
+
+
+@order_address_schema
+@user_authentication_required(role_required=[1])
+@api_view(["PUT"])
+@generic_response_handler
+def order_address(request):
+
+    serializer = UpdateOrderAddressSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    return update_order_address(
+        serializer.validated_data,
+        user_id=request.user_id
+    )
+
+
+@order_invoice_schema
+@user_authentication_required(role_required=[1, 2])
+@api_view(["GET"])
+def order_invoice(request):
+    """Streams the order's invoice as a PDF.
+
+    Deliberately NOT wrapped in generic_response_handler: that helper turns
+    every return value into a JSON envelope, which a binary download must
+    not be. Error cases still return JSON, built by hand here.
+    """
+
+    order_id = request.GET.get("id")
+
+    if not order_id:
+        return HttpResponse(
+            json.dumps({"success": False, "message": "Order id is required."}),
+            content_type="application/json",
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    # Same scoping rule as the order detail call: a customer can only ever
+    # download an invoice for an order that is theirs.
+    scoped_user_id = None if request.role_id == 1 else request.user_id
+
+    order_response, http_status = get_order_detail(
+        order_id=order_id,
+        user_id=scoped_user_id
+    )
+
+    if http_status != status.HTTP_200_OK:
+        return HttpResponse(
+            json.dumps({"success": False, **order_response}),
+            content_type="application/json",
+            status=http_status
+        )
+
+    order = order_response.get("data") or {}
+
+    pdf_bytes = build_invoice_pdf(order)
+
+    response = HttpResponse(pdf_bytes, content_type="application/pdf")
+
+    response["Content-Disposition"] = (
+        f'attachment; filename="invoice-{order.get("order_number", order_id)}.pdf"'
+    )
+
+    return response
 
 
 
