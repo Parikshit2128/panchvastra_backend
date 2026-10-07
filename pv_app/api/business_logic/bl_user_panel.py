@@ -2594,10 +2594,18 @@ def get_order_detail(order_id, user_id=None):
             -- The gateway reference the admin screen shows as "Transaction
             -- ID", plus when it actually went through. Kept on the payments
             -- row, so it is pulled laterally rather than duplicated onto
-            -- orders. A COD order simply has no payments row and both come
-            -- back NULL.
+            -- orders. A COD order has no payments row, so it has no
+            -- transaction id; its paid_at falls back to the delivery time,
+            -- which is when the cash was collected.
             pay.razorpay_payment_id AS transaction_id,
-            pay.paid_at
+            COALESCE(
+                pay.paid_at,
+                CASE
+                    WHEN o.payment_method = 'COD'
+                    AND o.payment_status = 'SUCCESS'
+                    THEN o.delivered_at
+                END
+            ) AS paid_at
 
         FROM public.orders o
 
@@ -2955,6 +2963,45 @@ def update_order_status(data, user_id=None):
     with connection.cursor() as cursor:
 
         cursor.execute(sql, values)
+
+        # Cash is handed over at the door, so delivery is the moment a COD
+        # order becomes paid. Razorpay orders are already SUCCESS by the time
+        # they ship and never match the WHERE. The payment_status guard makes
+        # it fire only on the FIRST delivery: re-saving DELIVERED (to fix a
+        # tracking id, say) matches no row, so total_spent is never counted
+        # twice. It runs in this function's transaction, so the delivery and
+        # the payment succeed or fail together.
+        if new_status == "DELIVERED":
+
+            cursor.execute(
+                """
+                UPDATE orders
+                SET
+                    payment_status = 'SUCCESS',
+                    updated_at = NOW()
+                WHERE id = %s
+                AND payment_method = 'COD'
+                AND payment_status <> 'SUCCESS'
+                AND is_deleted = FALSE
+                RETURNING user_id, grand_total
+                """,
+                [order_id]
+            )
+
+            collected = cursor.fetchone()
+
+            if collected:
+
+                cursor.execute(
+                    """
+                    UPDATE users
+                    SET
+                        total_spent = COALESCE(total_spent, 0) + %s,
+                        updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    [collected[1], collected[0]]
+                )
 
         # One history row per actual transition, which is what the admin's
         # Order Timeline panel lists. Re-saving the same status (to attach a
