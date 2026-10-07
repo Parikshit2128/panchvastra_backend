@@ -249,6 +249,7 @@ REST_FRAMEWORK = {
         'anon': '30/minute',
         'otp': '5/minute',
         'google_login': '10/minute',
+        'support_query': '5/minute',
         'admin_login': '10/minute',
     },
 }

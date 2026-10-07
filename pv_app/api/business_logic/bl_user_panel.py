@@ -1,6 +1,7 @@
 import json
 import math
 import traceback
+from datetime import datetime, timezone as dt_timezone
 
 from django.db import connection
 from rest_framework import status
@@ -2211,6 +2212,47 @@ def delete_coupon(coupon_id, user_id):
     }, status.HTTP_200_OK
 
 
+# Every moment an order API returns. The orders table mixes column types
+# (the original milestone columns are timestamp WITHOUT time zone, the later
+# ones timestamptz), so the same instant used to serialise as
+# "2026-10-07T08:58:58" for one field and "2026-10-07T09:03:39Z" for the
+# next. A browser reads the first as the viewer's LOCAL time and the second as
+# UTC, which showed events minutes apart as hours apart.
+ORDER_TIMESTAMP_FIELDS = (
+    "ordered_at",
+    "processing_at",
+    "shipped_at",
+    "out_for_delivery_at",
+    "delivered_at",
+    "cancelled_at",
+    "paid_at"
+)
+
+
+def as_utc(value):
+    """Returns a datetime as timezone-aware UTC; anything else untouched.
+
+    A naive value is taken to be UTC, which is what the database stores: its
+    session time zone is UTC and NOW() wrote these columns in it.
+    """
+
+    if not isinstance(value, datetime):
+        return value
+
+    if value.tzinfo is None:
+        return value.replace(tzinfo=dt_timezone.utc)
+
+    return value.astimezone(dt_timezone.utc)
+
+
+def normalize_order_timestamps(order):
+    for field in ORDER_TIMESTAMP_FIELDS:
+        if field in order:
+            order[field] = as_utc(order[field])
+
+    return order
+
+
 # The five steps the order timeline renders, in order, each paired with the
 # orders column that records when it was reached. CANCELLED is deliberately
 # not in here: it is not a step along the same line, it replaces the rest of
@@ -2454,6 +2496,8 @@ def get_order_listing(
 
         item["grand_total"] = float(item["grand_total"])
 
+        normalize_order_timestamps(item)
+
         item["status_label"] = ORDER_STATUS_LABELS.get(
             item["order_status"],
             item["order_status"]
@@ -2587,6 +2631,8 @@ def get_order_detail(order_id, user_id=None):
         columns = [col[0] for col in cursor.description]
         order = dict(zip(columns, row))
 
+    normalize_order_timestamps(order)
+
     items_sql = """
         SELECT
 
@@ -2686,7 +2732,7 @@ def get_order_detail(order_id, user_id=None):
                 "order_status": row[1],
                 "label": ORDER_STATUS_LABELS.get(row[1], row[1]),
                 "note": row[2],
-                "created_at": row[3],
+                "created_at": as_utc(row[3]),
                 "created_by": " ".join(
                     part for part in [row[4], row[5]] if part
                 ) or None
@@ -2721,7 +2767,7 @@ def get_order_detail(order_id, user_id=None):
                 {
                     "id": row[0],
                     "note": row[1],
-                    "created_at": row[2],
+                    "created_at": as_utc(row[2]),
                     "created_by": " ".join(
                         part for part in [row[3], row[4]] if part
                     ) or None
