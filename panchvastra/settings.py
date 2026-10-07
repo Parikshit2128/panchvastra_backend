@@ -250,6 +250,7 @@ REST_FRAMEWORK = {
         'otp': '5/minute',
         'google_login': '10/minute',
         'support_query': '5/minute',
+        'custom_request': '10/minute',
         'admin_login': '10/minute',
     },
 }

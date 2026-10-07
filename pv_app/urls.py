@@ -1,5 +1,6 @@
 from django.urls import path
 
+from pv_app.api.src.custom import custom_options, custom_requests
 from pv_app.api.src.support import submit_support_query, support_queries_management
 from pv_app.api.src.authentication import google_login, login_admin, login_user, register_user, user_profile, verify_email
 from pv_app.api.src.user_panel import address_management, order_address, order_invoice, order_notes, auth_carousel, cart_management, categories_management, coupon_management, notify_me_management, orders, products_management, sub_categories_management
@@ -24,6 +25,8 @@ urlpatterns = [
     path('notify_me/', notify_me_management, name='notify_me_management'),
     path('support_query/', submit_support_query, name='submit_support_query'),
     path('support_queries/', support_queries_management, name='support_queries_management'),
+    path('custom_options/', custom_options, name='custom_options'),
+    path('custom_requests/', custom_requests, name='custom_requests'),
 
     #Admin Panel APIs
     path('login_admin/', login_admin, name='login_admin'),
